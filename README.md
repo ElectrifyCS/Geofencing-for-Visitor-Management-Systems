@@ -1,3 +1,32 @@
+## The math (and why each piece is there)
+
+Every part of the detection logic exists to solve a specific, concrete problem — not for its own sake. Here's why each one is in the code, explained without assuming any particular math background:
+
+**GPS readings are noisy → Kalman filter (1D)**
+Consumer GPS jitters by a few meters even when someone is standing still. Feeding raw coordinates straight into anomaly checks would trigger false alarms constantly. The Kalman filter predicts where the visitor *should* be next based on their last known position, then blends that prediction with the new noisy reading — weighted by how much it trusts each one. The result is a smoothed position that's far more stable than either the prediction or the raw reading alone.
+
+**New visitors have no track record → logarithmic convergence factor**
+The very first GPS ping from a brand-new visitor tells you almost nothing — is 3 m/s their walking speed or a glitch? The system shouldn't be fully confident on one data point, but it also shouldn't wait forever to trust anything. `c(n) = min(1, ln(n + 1) / ln(B + 1))` grows quickly at first and then levels off — so confidence builds fast early on and then plateaus, rather than needing hundreds of readings to become useful.
+
+**Fixed limits punish legitimate variation → adaptive thresholds**
+A single hard speed limit is either too strict for a new visitor (lots of false positives before the system has learned anything) or too loose once you'd otherwise have enough history to be stricter. `τ(c) = 0.5 + 1.0 · c` ties the tolerance directly to the convergence factor above: loose at first, tightening automatically as the system accumulates evidence.
+
+**One violation isn't proof of spoofing → weighted anomaly scoring**
+A visitor could trip one check for an innocent reason (dropped signal, elevator, etc.). Spoofing is more convincingly signaled by *multiple* things going wrong together — speed, acceleration, time outside the geofence, and sudden jumps are combined into a single weighted score, and that score maps to a risk level (`TRUSTED` → `CRITICAL`) rather than a binary flag.
+
+<details>
+<summary>If you've done IB Mathematics AA HL, here's the syllabus mapping</summary>
+
+| AA HL topic | Where it shows up |
+|---|---|
+| Logarithmic functions | `compute_log_convergence_factor()` |
+| Sequences and limits | Behaviour of `c(n)` as `n → ∞` |
+| Vectors and vector geometry | Position/displacement/geofence checks in `GeofenceSystem` |
+| Statistics (mean & variance) | Kalman filter's noise model |
+| Functions and transformations | The `τ(c)` threshold-scaling function |
+
+</details>
+
 ## Code structure
 
 Everything lives in a single file, `Geofencing.py`, organized in layers:
