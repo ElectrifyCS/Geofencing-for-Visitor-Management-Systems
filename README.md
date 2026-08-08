@@ -2,7 +2,7 @@
 
 A production-grade, math-driven location verification system for visitor management. It detects GPS spoofing and physically implausible movement using Kalman filtering, logarithmic convergence, adaptive thresholds, per-visitor behaviour profiles, zone-aware rules, and badge/RFID correlation.
 
-Originally developed and implemented as part of a real-world visitor management project. The core detection logic proved reliable in practice and is now released as open source (demo uses fully synthetic data).
+I originally developed and implemented this as part of a real-world visitor management project. The core detection logic proved reliable in practice and is now released as open source (demo uses fully synthetic data).
 
 ![Legitimate visitor scenario](assets/visitor_legitimate_scenario.png)
 ![Suspicious visitor scenario](assets/visitor_suspicious_scenario.png)
@@ -118,7 +118,7 @@ A single hard speed limit is either too strict for a new visitor (lots of false 
 **One violation isn't proof of spoofing → weighted anomaly scoring**
 A visitor could trip one check for an innocent reason (dropped signal, elevator, etc.). Spoofing is more convincingly signaled by *multiple* things going wrong together — speed, acceleration, time outside the geofence, and sudden jumps are combined into a single weighted score, and that score maps to a risk level (`TRUSTED` → `CRITICAL`) rather than a binary flag.
 
-For reference, this maps onto IB Mathematics AA HL as follows: logarithmic functions and transformations (the convergence factor), sequences and limits (`c(n)` as `n → ∞`), vectors and vector geometry (position/displacement/geofence checks), statistics — mean and variance (the Kalman filter's noise model), and functions and transformations (`τ(c)`). That background isn't required to follow the explanations above — it's just where the ideas originally came from.
+For reference, this maps onto IB Mathematics AA HL as follows: logarithmic functions and transformations (the convergence factor), sequences and limits (`c(n)` as `n → ∞`), vectors and vector geometry (position/displacement/geofence checks), statistics — mean and variance (the Kalman filter's noise model), and functions and transformations (`τ(c)`). That background isn't required to follow the explanations above but for those who have that background are familiar with why i took this approach.
 
 ## Running the demo
 
