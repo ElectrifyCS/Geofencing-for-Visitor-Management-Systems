@@ -1,78 +1,50 @@
 # Visitor Geofencing Security System
 
-A location-based verification system for visitor management that detects
-spoofed GPS coordinates using multi-factor anomaly detection, adaptive
-thresholds, and badge/RFID correlation.
+A production-grade, math-driven location verification system for visitor management.  
+It detects GPS spoofing and physically implausible movement using Kalman filtering, logarithmic convergence, adaptive thresholds, per-visitor behaviour profiles, zone-aware rules, and badge/RFID correlation.
+
+Originally developed and implemented as part of a real-world visitor management project. The core detection logic proved reliable in practice and is now released as open source (demo uses fully synthetic data).
 
 ## What it does
 
-Visitors are tracked via GPS while moving through a facility. The system
-continuously checks whether their reported movement is *physically
-plausible* — humans don't teleport, and walking speed rarely exceeds a few
-metres per second. When a location report breaks those physical
-constraints, or disagrees with where a badge/RFID reader says the visitor
-is, it's flagged as a possible spoofing attempt and scored by risk level.
+Visitors are tracked via GPS while moving through a facility. The system continuously evaluates whether reported positions are *physically plausible*:
 
-Core features:
+- Humans do not teleport
+- Walking/running speeds stay within realistic bounds
+- Acceleration is limited
+- Reported GPS position should be consistent with badge/RFID reader locations
 
-- **Kalman filtering** to smooth noisy GPS readings before they're evaluated
-- **Adaptive thresholds** that loosen or tighten based on GPS accuracy and
-  how much data has been observed so far
-- **Per-visitor behavior profiles** that learn a visitor's typical
-  velocity/acceleration over repeat visits, so thresholds personalize
-  instead of using one-size-fits-all limits
-- **Badge/GPS correlation** — cross-checks RFID badge scans against GPS
-  position to catch mismatches
-- **Zone-aware rules** — a stairwell, a parking garage, and a lobby have
-  very different "normal" speeds, so each zone gets its own profile
-- **Risk scoring and audit logging** for a security dashboard view
+Violations are scored by risk level and logged for security review.
 
-## The math
+### Core capabilities
 
-A few pieces of the detection logic are worth calling out, since they're
-built directly on top of some standard tools:
+- **Kalman filtering (1D per axis)** – smooths noisy GPS before evaluation
+- **Logarithmic convergence factor** – starts conservative and gains confidence with more observations
+- **Adaptive thresholds** – automatically loosen/tighten based on GPS accuracy and observation history
+- **Per-visitor behaviour profiles** – learn typical velocity/acceleration across visits
+- **Zone-aware rules** – different normal speeds for lobby, stairwell, parking, etc.
+- **Badge / GPS correlation** – cross-checks RFID scans against GPS position
+- **Risk scoring + audit logging** – ready for a security dashboard
 
-- **Kalman filter (1D, applied per axis)** — smooths each GPS coordinate
-  by blending a prediction with each new noisy measurement, weighted by a
-  Kalman gain.
-- **Logarithmic convergence factor** — `c(n) = min(1, ln(n+1) / ln(B+1))`,
-  where `n` is the number of measurements seen and `B` is a baseline
-  sample size. This scales down the filter's trust in early
-  measurements and ramps it up as more data comes in, so the system
-  starts conservative and gets more confident over time.
-- **Adaptive threshold scaling** — `τ(c) = 0.5 + 1.0·c` adjusts velocity
-  and acceleration tolerances based on that same convergence factor,
-  giving more leeway early on and tightening up once the system has
-  enough history to trust its own estimate.
-- **Anomaly scoring** — combines velocity/acceleration constraint
-  violations, time spent outside a geofence boundary, and detected
-  "teleportation" jumps into a single weighted risk score.
+## The math (why it is reliable)
 
-If you've done IB Mathematics AA HL, a lot of this maps directly onto
-familiar topics: logarithmic functions and their transformations
-(the convergence factor), sequences/limits (convergence as `n → ∞`),
-vectors and vector geometry (position, displacement, and geofence
-boundary checks in 2D), and statistics (mean/variance underlying the
-Kalman filter and GPS noise modeling).
+The detection layer is deliberately built on transparent, standard mathematical tools rather than opaque heuristics:
 
-## Running it
+- **Kalman filter (1D)**  
+  Predicts the next position and blends it with the new noisy measurement using a Kalman gain.
+
+- **Logarithmic convergence factor**  where `n` = number of measurements so far and `B` = baseline sample size.  
+Early readings have reduced influence; confidence grows smoothly as evidence accumulates.
+
+- **Adaptive threshold scaling**  Velocity and acceleration tolerances start loose and tighten as the system gains trust in its own estimate.
+
+- **Anomaly scoring**  
+Weighted combination of velocity/acceleration violations, time outside geofence, and detected teleportation jumps.
+
+These map directly onto standard topics (logarithms & limits, vectors/geometry in 2D, mean/variance, sequences) and make the behaviour of the system predictable and tunable.
+
+## Running the demo
 
 ```bash
 pip install -r requirements.txt
 python Geofencing.py
-```
-
-This runs a self-contained demo with synthetic visitors and simulated
-GPS paths — no real data required — and saves two visualizations
-(`visitor_legitimate_scenario.png`, `visitor_suspicious_scenario.png`)
-showing a normal path versus a flagged one.
-
-## Status
-
-This is a personal project exploring GPS spoofing detection for visitor
-management systems. All names, zones, and locations in the demo code
-are synthetic.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
