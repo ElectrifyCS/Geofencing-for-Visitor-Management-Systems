@@ -1,144 +1,144 @@
-# Visitor Geofencing Security System
+# Visitor Geofencing Security System – Math Upgrades
 
-A production-grade, math-driven location verification system for visitor management. It detects GPS spoofing and physically implausible movement using Kalman filtering, logarithmic convergence, adaptive thresholds, per-visitor behaviour profiles, zone-aware rules, and badge/RFID correlation.
+Production-grade, **math-driven** location verification for visitor management systems.  
+Detects GPS spoofing and physically implausible movement using:
 
-I originally developed and implemented this as part of a real-world visitor management project. The core detection logic proved reliable in practice and is now released as open source (demo uses fully synthetic data).
+- 2-D constant-velocity Kalman filtering
+- Logarithmic convergence factor \(c(n)\)
+- Uncertainty-aware adaptive thresholds \(\tau(c,\sigma)\)
+- Robust (median + MAD) per-visitor behaviour profiles with exponential forgetting
+- Polygonal zones + directed transition graph
+- Badge/RFID risk fused directly into the anomaly score
 
-![Legitimate visitor scenario](assets/visitor_legitimate_scenario.png)
-![Suspicious visitor scenario](assets/visitor_suspicious_scenario.png)
+Originally developed for a live visitor-management deployment.  
+Demo uses fully synthetic data.
 
-## What it does
+---
 
-Visitors are tracked via GPS while moving through a facility. The system continuously evaluates whether their reported positions are *physically plausible*:
+## The Math (IB AA HL style)
 
-- Humans do not teleport
-- Walking/running speeds stay within realistic bounds
-- Acceleration is limited
-- Reported GPS position should be consistent with badge/RFID reader locations
+### 1. Logarithmic convergence
 
-When a location report breaks these physical constraints (or disagrees with badge/RFID data), it is flagged as a possible spoofing attempt and given a risk score.
+\[
+c(n)=\min\bigl(1,\tfrac{\ln(n+1)}{\ln(B+1)}\bigr)
+\]
 
-### Core capabilities
+Starts conservative, rises quickly, then asymptotes.  
+Used both on the Kalman gain and on the adaptive thresholds.
 
-- **Kalman filtering (1D per axis)** – smooths noisy GPS readings before evaluation
-- **Logarithmic convergence factor** – starts conservative and increases confidence as more data arrives
-- **Adaptive thresholds** – automatically loosen or tighten based on GPS accuracy and observation history
-- **Per-visitor behaviour profiles** – learn a visitor's typical velocity and acceleration across visits
-- **Zone-aware rules** – different normal speed profiles for lobby, stairwell, parking, etc.
-- **Badge / GPS correlation** – cross-checks RFID badge scans against GPS position
-- **Risk scoring + audit logging** – ready for a security dashboard
+### 2. Adaptive thresholds
 
-## Repo layout
+\[
+\tau(c)=0.5+c
+\]
+
+Further inflated by the filter’s own position uncertainty \(\sigma\):
+
+\[
+\tau(c,\sigma)=\tau(c)\cdot\bigl(1+\max(0,(\sigma-5)/20)\bigr)
+\]
+
+### 3. 2-D constant-velocity Kalman
+
+State \(\mathbf{x}=[p_x,p_y,v_x,v_y]^\top\)
+
+\[
+F=\begin{pmatrix}1&0&\Delta t&0\\0&1&0&\Delta t\\0&0&1&0\\0&0&0&1\end{pmatrix}
+\]
+
+Process noise from continuous white-noise acceleration.  
+Velocity taken directly from the state; acceleration by finite difference of successive velocity estimates.
+
+### 4. Robust behaviour profiles
+
+Online median + MAD with exponential forgetting \(\lambda\in(0,1]\):
+
+\[
+m_t=\lambda m_{t-1}+(1-\lambda)\operatorname{median}(\text{buffer})
+\]
+
+Only trusted observations are allowed to shrink the MAD.
+
+### 5. Uncertainty-aware scoring
+
+Kinematic signals are down-weighted when \(\sigma\) is large; badge risk is correspondingly up-weighted.  
+Component scores are re-normalised so the total weight remains 1.
+
+### 6. Polygonal geometry & transition graph
+
+Point-in-polygon by ray casting (even-odd rule).  
+Directed graph of allowed zone transitions with optional maximum transit times.
+
+---
+
+## Package layout
 
 ```
-Geofencing-for-Visitor-Management-Systems/
-├── geofencing/          # the package — detection engine
-│   ├── __init__.py      # public API
-│   ├── kalman.py        # Kalman filter + convergence factor + adaptive thresholds
-│   ├── models.py        # dataclasses: Visitor, Position, ZoneProfile, etc.
-│   ├── badge.py         # badge/RFID tracking and GPS correlation
-│   ├── geofence.py      # GeofenceSystem — the core detection engine
-│   ├── vms.py           # VisitorManagementSystem — day-to-day integration layer
-│   └── synthetic.py     # synthetic GPS path generators for the demo
-├── demo.py              # self-contained demo (produces the two images above)
-├── Geofencing.py        # thin backwards-compatible entry point
-├── assets/              # demo output images
-├── requirements.txt
-├── LICENSE
-└── README.md
+geofencing/
+├── kalman.py      # 2-D CV Kalman + c(n) + τ(c,σ)
+├── models.py      # dataclasses, polygons, robust profiles, transition graph
+├── badge.py       # RFID correlation (risk ready for fusion)
+├── geofence.py    # core detection engine
+├── vms.py         # day-to-day integration layer
+└── synthetic.py   # demo path generators
 ```
 
-## Code structure
+---
 
-The detection engine is split into a small package, `geofencing/`, plus a demo script:
-
-**`geofencing/kalman.py`** — signal processing
-- `compute_log_convergence_factor()` — the `c(n)` function
-- `KalmanFilter1D` — smooths one coordinate axis per instance; two are used together for (x, y)
-- `get_adaptive_thresholds()` — the `τ(c)` threshold scaling
-
-**`geofencing/models.py`** — data models (plain dataclasses)
-- `Visitor`, `Position`, `VisitorLocationReport`, `DetectionResult`
-- `ZoneProfile` — per-zone speed/acceleration limits (lobby vs. stairwell vs. parking, etc.)
-- `UserBehaviorProfile` — a visitor's learned typical velocity/acceleration, refined over repeat visits
-- `BuildingLayout` — holds a facility's zones and visitor profiles together
-
-**`geofencing/badge.py`** — badge/RFID tracking
-- `BadgeEvent`, `BadgeGPSCorrelation` — badge scan data and its comparison against GPS
-- `BadgeSystem` — registers RFID readers and cross-checks scans against reported GPS via `correlate_badge_gps()`
-
-**`geofencing/geofence.py`** — detection engine
-- `GeofenceSystem` — the core class for one zone. `detect_spoofing()` runs Kalman smoothing, computes velocity/acceleration violations, geofence-boundary time, and teleportation jumps, then returns a weighted `DetectionResult`. `verify_visitor()` wraps this per-visitor and folds in behavior-profile adjustments.
-
-**`geofencing/vms.py`** — integration layer
-- `VisitorManagementSystem` — the class you actually use day-to-day: `register_visitor()`, `add_geofence()`, `verify_visitor_location()`, `record_badge_event()`, `export_audit_log()`. It owns all active visitors, zones, and the running security-alert log.
-
-**`geofencing/synthetic.py`** — demo data
-- `generate_legitimate_path()`, `generate_spoofed_path()`, `generate_extreme_spoofed_path()` — build synthetic GPS traces for testing
-
-**`demo.py`** — the runnable walkthrough that builds a sample facility, runs several visitor scenarios, and saves the two images above into `assets/`. `Geofencing.py` at the repo root just calls into this, kept so `python Geofencing.py` still works exactly as before.
-
-### Minimal usage
+## Minimal usage
 
 ```python
-from geofencing import VisitorManagementSystem, Visitor, Position
+from geofencing import (
+    VisitorManagementSystem, Visitor, Position,
+    ZoneProfile, TransitionGraph, BuildingLayout
+)
 from datetime import datetime
 
+# Polygonal lobby example
+lobby = ZoneProfile(
+    zone_name="main_lobby",
+    center=(0, 0),
+    radius=80,
+    vertices=[(-60, -40), (60, -40), (70, 50), (-50, 55)],
+    v_max=2.2, a_max=1.8, zone_type="lobby"
+)
+
+tg = TransitionGraph()
+tg.add_edge("parking", "main_lobby", max_time=180)
+tg.add_edge("main_lobby", "corridor_a", max_time=60)
+
+layout = BuildingLayout("CBK HQ", zones=[lobby], transition_graph=tg)
+
 vms = VisitorManagementSystem()
-vms.add_geofence("main_lobby", center=(0.0, 0.0), radius=200.0)
+vms.set_building_layout(layout)
 
 visitor = Visitor(
     visitor_id="V001", name="Jane Doe", badge_tag="B-001",
-    entry_time=datetime.now(), expected_zones=[(0.0, 0.0)],
-    allowed_areas=["main_lobby"],
+    entry_time=datetime.now(), allowed_areas=["main_lobby"]
 )
 vms.register_visitor(visitor)
 
 positions = [
-    Position(t=0.0, x=0.0, y=0.0, gps_accuracy=5.0),
-    Position(t=60.0, x=1.5, y=0.5, gps_accuracy=5.0),
+    Position(t=0.0, x=0.0, y=0.0, gps_accuracy=4.5),
+    Position(t=45.0, x=12.0, y=3.0, gps_accuracy=5.0),
+    Position(t=90.0, x=25.0, y=8.0, gps_accuracy=4.8),
 ]
 report = vms.verify_visitor_location("V001", "main_lobby", positions)
-print(report.risk_level, report.anomaly_score)
+print(report.risk_level, report.anomaly_score, report.position_uncertainty)
 ```
 
-## The math (and why each piece is there)
-
-Every part of the detection logic exists to solve a specific, concrete problem — not for its own sake. Here's why each one is in the code:
-
-**GPS readings are noisy → Kalman filter (1D)**
-Consumer GPS jitters by a few meters even when someone is standing still. Feeding raw coordinates straight into anomaly checks would trigger false alarms constantly. The Kalman filter predicts where the visitor *should* be next based on their last known position, then blends that prediction with the new noisy reading — weighted by how much it trusts each one. The result is a smoothed position that's far more stable than either the prediction or the raw reading alone.
-
-**New visitors have no track record → logarithmic convergence factor**
-The very first GPS ping from a brand-new visitor tells you almost nothing — is 3 m/s their walking speed or a glitch? The system shouldn't be fully confident on one data point, but it also shouldn't wait forever to trust anything. `c(n) = min(1, ln(n + 1) / ln(B + 1))` grows quickly at first and then levels off — so confidence builds fast early on and then plateaus, rather than needing hundreds of readings to become useful.
-
-**Fixed limits punish legitimate variation → adaptive thresholds**
-A single hard speed limit is either too strict for a new visitor (lots of false positives before the system has learned anything) or too loose once you'd otherwise have enough history to be stricter. `τ(c) = 0.5 + 1.0 · c` ties the tolerance directly to the convergence factor above: loose at first, tightening automatically as the system accumulates evidence.
-
-**One violation isn't proof of spoofing → weighted anomaly scoring**
-A visitor could trip one check for an innocent reason (dropped signal, elevator, etc.). Spoofing is more convincingly signaled by *multiple* things going wrong together — speed, acceleration, time outside the geofence, and sudden jumps are combined into a single weighted score, and that score maps to a risk level (`TRUSTED` → `CRITICAL`) rather than a binary flag.
-
-For reference, this maps onto IB Mathematics AA HL as follows: logarithmic functions and transformations (the convergence factor), sequences and limits (`c(n)` as `n → ∞`), vectors and vector geometry (position/displacement/geofence checks), statistics — mean and variance (the Kalman filter's noise model), and functions and transformations (`τ(c)`). That background isn't required to follow the explanations above but for those who have that background are familiar with why i took this approach.
-
-## Running the demo
-
-```bash
-pip install -r requirements.txt
-python Geofencing.py
-```
-
-The script runs a self-contained demonstration with synthetic visitors and simulated GPS paths, and writes the two images shown above to `assets/`. No real location data is required or included.
+---
 
 ## Requirements
 
 - Python 3.9+
-- numpy >= 1.24
-- matplotlib >= 3.7
+- numpy ≥ 1.24
+- matplotlib ≥ 3.7
+
+---
 
 ## Status
 
-This repository contains the detection engine that was implemented and validated in a live visitor-management context. The public demo uses completely synthetic names, zones, and trajectories. The mathematical approach (Kalman filtering + logarithmic convergence + adaptive thresholds) proved reliable and forms the foundation of this open-source release.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+Core detection logic validated in a live visitor-management environment.  
+Public demo uses completely synthetic trajectories.  
+All upgrades preserve the original transparent, math-first philosophy.
