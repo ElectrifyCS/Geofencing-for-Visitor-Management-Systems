@@ -1,4 +1,4 @@
-# Visitor Geofencing Security System
+# Geofencing for Visitor Management System
 
 A production-grade, **math-driven** location verification system for visitor management.  
 It detects GPS spoofing and physically implausible movement using Kalman filtering, logarithmic convergence, adaptive thresholds, per-visitor behaviour profiles, zone-aware rules, and badge/RFID correlation.
