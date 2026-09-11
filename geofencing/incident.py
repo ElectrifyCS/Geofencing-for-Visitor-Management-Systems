@@ -22,7 +22,7 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from tracking import PositionSample
+from .tracking import PositionSample
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ def position_confidence(sample: PositionSample, now_s: float, half_life_s: float
 
 def muster(
     last_known: Dict[str, PositionSample],
-    zone_lookup,  # callable: PositionSample -> Optional[Polygon] (i.e. ZoneHierarchy.resolve)
+    zone_lookup,  # callable: PositionSample -> Optional[ZoneProfile] (i.e. ZoneHierarchy.resolve)
     now_s: float,
     stale_confidence_threshold: float = 0.25,
 ) -> MusterReport:
@@ -77,7 +77,7 @@ def muster(
 
         confidence = position_confidence(sample, now_s)
         bucket = per_zone.setdefault(
-            zone.zone_id, {"label": zone.label, "total": 0, "stale": 0}
+            zone.zone_name, {"label": zone.zone_name, "total": 0, "stale": 0}
         )
         bucket["total"] += 1
         if confidence < stale_confidence_threshold:
@@ -128,7 +128,7 @@ if __name__ == "__main__":
 
     class _FakeZone:
         def __init__(self, zone_id, label):
-            self.zone_id, self.label = zone_id, label
+            self.zone_name, self.label = zone_id, label
 
     lobby = _FakeZone("Z-LOBBY", "Public Lobby")
     server_room = _FakeZone("Z-SERVER", "Server Room")
