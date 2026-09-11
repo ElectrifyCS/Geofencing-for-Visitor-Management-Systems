@@ -24,7 +24,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Optional, Tuple
 
-from tracking import PositionSample, compute_heading
+from .tracking import PositionSample, compute_heading
 
 
 # ---------------------------------------------------------------------------
