@@ -5,21 +5,29 @@ The foundation layer for Zone Mapping & Geofence Management: turns a blueprint
 image + hand-drawn polygons into real-world zone geometry, and resolves any
 tag's (x, y, z) position to the correct — and most specific — zone.
 
+This module previously defined its own standalone `Polygon` class, which
+duplicated point-in-polygon and area logic already present on the real
+`ZoneProfile` (see models.py). That duplication has been reconciled:
+`ZoneProfile` now owns the 3D containment (`contains_3d`) and area
+(`area`) logic, and `ZoneHierarchy` below operates directly on
+`ZoneProfile` instances instead of a parallel type. This module now only
+adds what `ZoneProfile` didn't already have: blueprint pixel-coordinate
+calibration, and area-based resolution across a whole facility's zones.
+
 Math foundation (IB AA HL tie-ins, matching the rest of this project):
   - CoordinateCalibrator: complex numbers in modulus-argument form. A
     similarity transform (rotation + uniform scale + translation) between
     two coordinate systems is exactly one complex multiply-and-add,
     z' = a*z + b, solved from two reference point pairs.
-  - Polygon.area(): the shoelace formula, a direct sigma-notation sum over
-    vertex pairs — reused as the tie-breaker for nested zones.
-  - Polygon.contains_point(): ray-casting point-in-polygon, coordinate
-    geometry / vectors.
-  - ZoneHierarchy: containment resolved by ascending polygon area, since a
+  - ZoneProfile.area() (models.py): the shoelace formula, a direct
+    sigma-notation sum over vertex pairs — used here as the tie-breaker
+    for nested zones.
+  - ZoneProfile.contains() / contains_3d() (models.py): ray-casting
+    point-in-polygon, coordinate geometry / vectors, extruded into a
+    vertical prism for floor-aware containment.
+  - ZoneHierarchy: containment resolved by ascending zone area, since a
     restricted zone is by construction smaller than the zone it nests
     inside (Server Room < Escort Required < Public Lobby).
-
-Pure stdlib — no external dependencies, so it drops into the existing
-package without touching requirements.
 """
 
 from __future__ import annotations
@@ -29,6 +37,8 @@ import json
 import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+
+from .models import ZoneProfile
 
 Point = Tuple[float, float]
 Point3D = Tuple[float, float, float]
@@ -91,81 +101,40 @@ class CoordinateCalibrator:
 
 
 @dataclass
-class Polygon:
-    """A single geofence zone boundary: an ordered list of (x, y) vertices, in metres."""
-
-    vertices: List[Point]
-    zone_id: str
-    label: str = ""
-    risk_level: str = "public"  # "public" | "escort_required" | "prohibited"
-    floor_id: str = "1"
-    z_min: float = 0.0
-    z_max: float = 3.0  # default single-storey slab height, metres
-
-    def area(self) -> float:
-        """Shoelace formula: A = 1/2 * |sum(x_i * y_(i+1) - x_(i+1) * y_i)|."""
-        n = len(self.vertices)
-        if n < 3:
-            return 0.0
-        total = 0.0
-        for i in range(n):
-            x1, y1 = self.vertices[i]
-            x2, y2 = self.vertices[(i + 1) % n]
-            total += x1 * y2 - x2 * y1
-        return abs(total) / 2.0
-
-    def contains_point(self, point: Point) -> bool:
-        """Ray-casting point-in-polygon: odd number of edge crossings = inside."""
-        x, y = point
-        n = len(self.vertices)
-        inside = False
-        x1, y1 = self.vertices[-1]
-        for i in range(n):
-            x2, y2 = self.vertices[i]
-            if (y1 > y) != (y2 > y):
-                x_intersect = (y - y1) * (x2 - x1) / (y2 - y1) + x1
-                if x < x_intersect:
-                    inside = not inside
-            x1, y1 = x2, y2
-        return inside
-
-    def contains_point_3d(self, point3d: Point3D) -> bool:
-        """3D containment: the 2D polygon extruded into a vertical prism between z_min/z_max."""
-        x, y, z = point3d
-        return self.z_min <= z <= self.z_max and self.contains_point((x, y))
-
-
-@dataclass
 class ZoneHierarchy:
     """
-    Every zone polygon for a facility, across any number of floors,
+    Every ZoneProfile for a facility, across any number of floors,
     pre-sorted by ascending area so the most specific nested zone resolves
     first (Server Room before Escort Required before Public Lobby).
+
+    Operates on the real ZoneProfile from models.py, not a parallel type —
+    add any zone you'd otherwise hand to GeofenceSystem/BuildingLayout,
+    just with floor_id/z_min/z_max/risk_level populated for the 3D cases.
     """
 
-    zones: List[Polygon] = field(default_factory=list)
+    zones: List[ZoneProfile] = field(default_factory=list)
 
-    def add_zone(self, polygon: Polygon) -> None:
-        self.zones.append(polygon)
-        self.zones.sort(key=lambda p: p.area())
+    def add_zone(self, zone: ZoneProfile) -> None:
+        self.zones.append(zone)
+        self.zones.sort(key=lambda z: z.area())
 
-    def resolve(self, point3d: Point3D) -> Optional[Polygon]:
+    def resolve(self, point3d: Point3D) -> Optional[ZoneProfile]:
         """Smallest-area zone containing the point, or None if outside every zone."""
         for zone in self.zones:
-            if zone.contains_point_3d(point3d):
+            if zone.contains_3d(point3d):
                 return zone
         return None
 
-    def resolve_all(self, point3d: Point3D) -> List[Polygon]:
+    def resolve_all(self, point3d: Point3D) -> List[ZoneProfile]:
         """Every zone containing the point, smallest to largest (audit/debug)."""
-        return [z for z in self.zones if z.contains_point_3d(point3d)]
+        return [z for z in self.zones if z.contains_3d(point3d)]
 
     def to_json(self) -> str:
         return json.dumps(
             [
                 {
-                    "zone_id": z.zone_id,
-                    "label": z.label,
+                    "zone_name": z.zone_name,
+                    "zone_type": z.zone_type,
                     "risk_level": z.risk_level,
                     "floor_id": z.floor_id,
                     "z_min": z.z_min,
@@ -194,19 +163,19 @@ if __name__ == "__main__":
     )
     print(f"  pixel (200, 50) -> world {calibrator.pixel_to_world((200, 50))}\n")
 
-    lobby = Polygon(
-        vertices=[(0, 0), (30, 0), (30, 20), (0, 20)],
-        zone_id="Z-LOBBY", label="Public Lobby", risk_level="public",
+    lobby = ZoneProfile(
+        zone_name="Z-LOBBY", zone_type="lobby", center=(15.0, 10.0),
+        vertices=[(0, 0), (30, 0), (30, 20), (0, 20)], risk_level="public",
         floor_id="1", z_min=0.0, z_max=3.0,
     )
-    server_room = Polygon(
-        vertices=[(20, 5), (28, 5), (28, 12), (20, 12)],
-        zone_id="Z-SERVER", label="Server Room", risk_level="prohibited",
+    server_room = ZoneProfile(
+        zone_name="Z-SERVER", zone_type="server_room", center=(24.0, 8.5),
+        vertices=[(20, 5), (28, 5), (28, 12), (20, 12)], risk_level="prohibited",
         floor_id="1", z_min=0.0, z_max=3.0,
     )
-    exec_suite_above = Polygon(
-        vertices=[(20, 5), (28, 5), (28, 12), (20, 12)],
-        zone_id="Z-EXEC-2F", label="Executive Suite", risk_level="escort_required",
+    exec_suite_above = ZoneProfile(
+        zone_name="Z-EXEC-2F", zone_type="executive_suite", center=(24.0, 8.5),
+        vertices=[(20, 5), (28, 5), (28, 12), (20, 12)], risk_level="escort_required",
         floor_id="2", z_min=3.0, z_max=6.0,
     )
 
@@ -225,7 +194,7 @@ if __name__ == "__main__":
     for label, pt in test_points.items():
         zone = hierarchy.resolve(pt)
         result = (
-            f"{zone.zone_id} ({zone.risk_level}, floor {zone.floor_id})"
+            f"{zone.zone_name} ({zone.risk_level}, floor {zone.floor_id})"
             if zone else "OUTSIDE ALL ZONES"
         )
         print(f"  {label:40s} {pt} -> {result}")

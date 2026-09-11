@@ -121,6 +121,10 @@ class ZoneProfile:
     epsilon_v: float = 0.3
     epsilon_a: float = 0.3
     zone_type: str = "general"  # lobby, corridor, parking, stairwell, ...
+    risk_level: str = "public"  # "public" | "escort_required" | "prohibited"
+    floor_id: str = "1"
+    z_min: float = 0.0
+    z_max: float = 3.0          # metres; default single-storey slab height
 
     def is_polygonal(self) -> bool:
         return self.vertices is not None and len(self.vertices) >= 3
@@ -130,6 +134,33 @@ class ZoneProfile:
         if self.is_polygonal():
             return _point_in_polygon(point, self.vertices)
         return float(np.linalg.norm(point - np.asarray(self.center))) <= self.radius
+
+    def contains_3d(self, point3d: Tuple[float, float, float]) -> bool:
+        """
+        3D containment: this zone's 2D footprint extruded into a vertical
+        prism between z_min/z_max, for distinguishing zones stacked
+        directly above one another on different floors.
+        """
+        x, y, z = point3d
+        return self.z_min <= z <= self.z_max and self.contains(np.array([x, y]))
+
+    def area(self) -> float:
+        """
+        Shoelace formula: A = 1/2 * |sum(x_i * y_(i+1) - x_(i+1) * y_i)|.
+        Used to resolve overlapping/nested zones by specificity (see
+        ZoneHierarchy in floorplan.py) — a smaller-area zone nested inside
+        a larger one, e.g. a server room inside a lobby, should win.
+        Circular (non-polygonal) zones use pi*r^2.
+        """
+        if not self.is_polygonal():
+            return 3.14159265358979 * self.radius ** 2
+        n = len(self.vertices)
+        total = 0.0
+        for i in range(n):
+            x1, y1 = self.vertices[i]
+            x2, y2 = self.vertices[(i + 1) % n]
+            total += x1 * y2 - x2 * y1
+        return abs(total) / 2.0
 
 
 def _point_in_polygon(point: np.ndarray, vertices: List[Tuple[float, float]]) -> bool:
