@@ -2,11 +2,10 @@
 """
 Visitor Geofencing Security System — backwards-compatible entry point.
 
-The implementation now lives in the `geofencing/` package (see README for
-the module layout). This file is kept so existing instructions and scripts
-that run `python Geofencing.py` continue to work unchanged.
+The implementation lives in the `geofencing/` package.
+This file is kept so `python Geofencing.py` continues to work.
 """
-from demo import _demo
+import runpy
 
 if __name__ == "__main__":
-    _demo()
+    runpy.run_path("demo.py", run_name="__main__")
