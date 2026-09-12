@@ -88,21 +88,18 @@ These upgrades directly address the live-testing challenges of coordinate drift 
 
 ---
 
-## In-progress roadmap modules (prototype, not yet wired in)
+## v2 roadmap: zone mapping, positioning, and real-time policy enforcement
 
-Five standalone modules toward a fuller production roadmap (dynamic floor
+Six modules building toward a fuller production system: dynamic floor
 plans, indoor positioning, real-time policy enforcement, incident
-response, tag lifecycle). Each is independently tested but **not yet
-integrated** with `GeofenceSystem` / `VisitorManagementSystem` — they
-don't share a zone representation with `ZoneProfile` yet, and
-`floorplan.py`'s polygon containment overlaps conceptually with the
-`vertices` support already in `ZoneProfile`. Reconciling the two into one
-zone system is an open task, not yet done.
+response, and tag lifecycle management.
 
 - **`floorplan.py`** — blueprint-to-real-world coordinate calibration via
-  a complex-number similarity transform, polygon containment (shoelace +
-  ray-casting), and 3D floor-prism containment for distinguishing
-  vertically-stacked zones.
+  a complex-number similarity transform, and a `ZoneHierarchy` that
+  resolves overlapping/nested zones by area. Its 3D containment and area
+  logic live directly on the real `ZoneProfile` class in `models.py`
+  (`contains_3d()`, `area()`, `floor_id`/`z_min`/`z_max`/`risk_level`)
+  rather than a separate parallel type.
 - **`multilateration.py`** — anchor-based (x, y, z) positioning from
   ranging data: log-distance RSSI conversion, linear multilateration
   refined by Gauss-Newton least squares. Note: vertical accuracy is
@@ -117,11 +114,38 @@ zone system is an open task, not yet done.
 - **`tag_lifecycle.py`** — tag provisioning, battery discharge-rate
   prediction (linear regression), and anti-passback / tag-drop detection
   (speed-anomaly + rolling-variance stationary detection).
+- **`integrated.py`** — wires the four modules above into
+  `VisitorManagementSystem`: a single `update_visitor_position()` entry
+  point runs spoofing detection, tether/dwell/tag-drop checks, and zone
+  resolution together for one incoming position update.
 
 Math foundation ties to IB AA HL: complex numbers (blueprint calibration),
 vectors (distance/containment/directional checks), sequences and series
 (shoelace formula), statistics (z-score anomaly thresholds, variance),
 and systems of linear equations (multilateration).
+
+### Live dashboard simulation
+
+`live_dashboard_simulation.html` is a self-contained, dependency-free
+walkthrough of the scenario above: an escorted visitor moves through a
+two-floor facility, and the dashboard shows 3D zone containment (the
+same x/y position resolving to different zones on different floors), an
+escort-tether breach, a dwell-time anomaly, a tag-drop detection, an
+automated muster count, and a proximity-dispatch result — one coherent
+story instead of five separate modules.
+
+It exists to make the v2 work easy to *see* working end to end without
+reading through five files of Python first — useful for demos, and as a
+regression check that a future change to the underlying logic still
+tells the same coherent story.
+
+**Important:** it's a static, pre-scripted replay of a validated test
+run, not a live wrapper around `integrated.py`. The numbers are real —
+they're the actual output of running the scenario against
+`geofencing/integrated.py` — but the HTML doesn't call into the Python
+code, so if the underlying logic changes later, this file won't
+automatically reflect that on its own. Open it directly in a browser;
+no server or build step needed.
 
 ---
 
@@ -132,18 +156,20 @@ Geofencing-for-Visitor-Management-Systems/
 ├── geofencing/              # the package — detection engine
 │   ├── __init__.py          # public API
 │   ├── kalman.py            # 2-D CV Kalman + c(n) + τ(c,σ)
-│   ├── models.py            # dataclasses, polygons, robust profiles, transition graph
+│   ├── models.py            # dataclasses, ZoneProfile (2D + 3D), robust profiles, transition graph
 │   ├── badge.py             # badge/RFID tracking and GPS correlation
 │   ├── geofence.py          # GeofenceSystem — the core detection engine
 │   ├── vms.py               # VisitorManagementSystem — day-to-day integration layer
 │   ├── synthetic.py         # synthetic GPS path generators for the demo
-│   ├── floorplan.py         # (prototype, not yet wired in) polygon zone mapping + blueprint calibration
-│   ├── multilateration.py   # (prototype, not yet wired in) anchor-based (x, y, z) positioning
-│   ├── tracking.py          # (prototype, not yet wired in) escort tethering, dwell monitoring, directional vectors
-│   ├── incident.py          # (prototype, not yet wired in) mustering + proximity dispatch
-│   └── tag_lifecycle.py     # (prototype, not yet wired in) provisioning, battery health, anti-passback/tag-drop
+│   ├── floorplan.py         # blueprint calibration + zone hierarchy (built on ZoneProfile)
+│   ├── multilateration.py   # anchor-based (x, y, z) positioning
+│   ├── tracking.py          # escort tethering, dwell monitoring, directional vectors
+│   ├── incident.py          # mustering + proximity dispatch
+│   ├── tag_lifecycle.py     # provisioning, battery health, anti-passback/tag-drop
+│   └── integrated.py        # wires the v2 modules into VisitorManagementSystem
 ├── demo.py                  # self-contained demo (produces the two images above)
-├── Geofencing.py            # thin backwards-compatible entry point
+├── Geofencing.py             # thin backwards-compatible entry point
+├── live_dashboard_simulation.html  # static walkthrough of the v2 scenario end to end
 ├── assets/                  # demo output images
 ├── requirements.txt
 ├── LICENSE

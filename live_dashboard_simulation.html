@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VMS — Live Zone &amp; Policy Simulation</title>
+<style>
+  :root {
+    --surface-0: #f4f3ef; --surface-1: #ffffff; --surface-2: #fafaf8;
+    --border: #ddd; --border-strong: #bbb;
+    --text-primary: #1c1c1a; --text-secondary: #5f5e5a; --text-muted: #8b8a84;
+    --danger-bg: #fcebeb; --danger-border: #e24b4a; --danger-text: #791f1f;
+    --accent-bg: #e6f1fb; --accent-border: #378add; --accent-text: #0c447c;
+    --green-bg: #eaf3de; --green-border: #639922; --green-text: #173404;
+    --red-bg: #fcebeb; --red-border: #e24b4a; --red-text: #501313;
+    --amber-bg: #faeeda; --amber-border: #ba7517; --amber-text: #412402;
+    --gray-fill: #8b8a84; --gray-stroke: #5f5e5a;
+    --blue-fill: #378add; --blue-stroke: #185fa5;
+    --purple-fill: #7f77dd; --purple-stroke: #534ab7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface-0: #1c1c1a; --surface-1: #262623; --surface-2: #2c2c2a;
+      --border: #3a3a37; --border-strong: #55554f;
+      --text-primary: #f0efe9; --text-secondary: #b4b2a9; --text-muted: #888780;
+      --danger-bg: #4a1b0c; --danger-border: #e24b4a; --danger-text: #f7c1c1;
+      --accent-bg: #042c53; --accent-border: #378add; --accent-text: #b5d4f4;
+      --green-bg: #173404; --green-border: #97c459; --green-text: #eaf3de;
+      --red-bg: #501313; --red-border: #f09595; --red-text: #fcebeb;
+      --amber-bg: #412402; --amber-border: #ef9f27; --amber-text: #faeeda;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1rem 4rem; background: var(--surface-0);
+    color: var(--text-primary); font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  .caption { font-size: 14px; color: var(--text-secondary); margin: 0 0 24px; }
+  button {
+    font-family: inherit; font-size: 14px; padding: 10px 16px; border-radius: 8px;
+    border: 0.5px solid var(--border-strong); background: var(--surface-1);
+    color: var(--text-primary); cursor: pointer;
+  }
+  button:hover { background: var(--surface-2); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.active { border-color: var(--accent-border); border-width: 1.5px; }
+  .floor-toggle { display: flex; gap: 8px; margin-bottom: 12px; }
+  .floor-toggle button { flex: 1; }
+  svg { background: var(--surface-1); border-radius: 8px; border: 0.5px solid var(--border); display: block; }
+  .th { font-size: 14px; font-weight: 600; fill: var(--text-primary); }
+  .ts { font-size: 12px; fill: var(--text-secondary); }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0; }
+  .stat-card { background: var(--surface-1); border: 0.5px solid var(--border); border-radius: 8px; padding: 1rem; }
+  .stat-label { font-size: 13px; color: var(--text-secondary); margin: 0 0 4px; }
+  .stat-value { font-size: 20px; font-weight: 600; margin: 0; }
+  #extra-panel {
+    display: none; background: var(--accent-bg); border-radius: 8px;
+    padding: 1rem; margin-bottom: 12px;
+  }
+  #extra-panel p { font-size: 14px; margin: 0; color: var(--accent-text); }
+  .controls { display: flex; gap: 8px; margin-bottom: 20px; }
+  .controls button:first-child { flex: 1; }
+  .log-label { font-size: 13px; color: var(--text-secondary); margin: 0 0 8px; }
+  #log { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+  .log-row { padding: 8px 10px; font-size: 13px; border-left: 3px solid var(--border); }
+  .log-row.alert { border-left-color: var(--danger-border); background: var(--danger-bg); color: var(--danger-text); }
+  .log-row.info { border-left-color: var(--border-strong); background: var(--surface-1); color: var(--text-secondary); }
+  footer { margin-top: 32px; font-size: 12px; color: var(--text-muted); }
+  footer a { color: var(--text-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>VMS — live zone &amp; policy simulation</h1>
+  <p class="caption">Escorted visit walkthrough exercising 3D zone containment, escort tethering, dwell monitoring, tag-drop detection, mustering, and proximity dispatch.</p>
+
+  <div class="floor-toggle">
+    <button id="floor1-btn" onclick="setFloor(1)">Floor 1</button>
+    <button id="floor2-btn" onclick="setFloor(2)">Floor 2</button>
+  </div>
+
+  <svg width="100%" viewBox="0 0 680 300" role="img">
+    <title>Facility floor plan</title>
+    <desc>Shows the lobby and server room on floor 1, and the executive suite directly above the server room on floor 2</desc>
+
+    <g id="floor1-group">
+      <rect x="190" y="40" width="300" height="200" rx="8" fill="var(--green-bg)" stroke="var(--green-border)" stroke-width="1"/>
+      <text class="th" x="204" y="60" fill="var(--green-text)">Main lobby</text>
+      <text class="ts" x="204" y="76" fill="var(--green-text)">Public</text>
+      <rect x="390" y="90" width="80" height="70" rx="6" fill="var(--red-bg)" stroke="var(--red-border)" stroke-width="1"/>
+      <text class="ts" x="398" y="112" fill="var(--red-text)">Server room</text>
+      <text class="ts" x="398" y="126" fill="var(--red-text)">Prohibited</text>
+    </g>
+
+    <g id="floor2-group" style="display:none;">
+      <rect x="190" y="40" width="300" height="200" rx="8" fill="none" stroke="var(--border-strong)" stroke-width="1" stroke-dasharray="4 4"/>
+      <text class="ts" x="204" y="60" fill="var(--text-muted)">No zone defined here</text>
+      <rect x="390" y="90" width="80" height="70" rx="6" fill="var(--amber-bg)" stroke="var(--amber-border)" stroke-width="1"/>
+      <text class="ts" x="398" y="112" fill="var(--amber-text)">Exec suite</text>
+      <text class="ts" x="398" y="126" fill="var(--amber-text)">Escort req.</text>
+    </g>
+
+    <rect id="marker-tag" x="0" y="0" width="10" height="10" fill="var(--gray-fill)" stroke="var(--gray-stroke)" style="display:none;"/>
+    <circle id="marker-g1" r="5" fill="var(--gray-fill)" stroke="var(--gray-stroke)" style="display:none;"/>
+    <circle id="marker-g2" r="5" fill="var(--gray-fill)" stroke="var(--gray-stroke)" style="display:none;"/>
+    <circle id="marker-g3" r="5" fill="var(--gray-fill)" stroke="var(--gray-stroke)" style="display:none;"/>
+    <circle id="marker-host" r="6" fill="var(--purple-fill)" stroke="var(--purple-stroke)" style="display:none;"/>
+    <circle id="marker-visitor" r="7" fill="var(--blue-fill)" stroke="var(--blue-stroke)" style="display:none;"/>
+  </svg>
+
+  <div class="stats">
+    <div class="stat-card">
+      <p class="stat-label">Zone</p>
+      <p class="stat-value" id="stat-zone">–</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Risk level</p>
+      <p class="stat-value" id="stat-risk">–</p>
+    </div>
+  </div>
+
+  <div id="extra-panel"><p id="extra-panel-text"></p></div>
+
+  <div class="controls">
+    <button id="next-btn" onclick="nextStep()">Start walkthrough</button>
+    <button onclick="resetSim()">Reset</button>
+  </div>
+
+  <div>
+    <p class="log-label">Event log</p>
+    <div id="log"></div>
+  </div>
+
+  <footer>
+    Simulation replays a validated test scenario from <code>geofencing/integrated.py</code>.
+    No live data — every position and alert here is a fixed, pre-tested walkthrough.
+  </footer>
+</div>
+
+<script>
+const M = 10, OX = 190, OY = 40;
+const toPx = (x, y) => [OX + x * M, OY + y * M];
+
+const steps = [
+  { floor:1, visitor:[6,5], host:[5,5], zone:"Main lobby", risk:"TRUSTED",
+    log:{type:"info", text:"Visitor and host together in the lobby"} },
+  { floor:1, visitor:[24,8], host:[23,8], zone:"Server room", risk:"TRUSTED",
+    log:{type:"info", text:"Visitor and host enter the server room"} },
+  { floor:2, visitor:[24,8], zone:"Exec suite (floor 2)", risk:"TRUSTED",
+    log:{type:"info", text:"Same (x, y) as the server room below, but floor 2 -- correctly resolves to the exec suite, not the server room"} },
+  { floor:1, visitor:[5,18], host:[23,8], zone:"Main lobby", risk:"TRUSTED",
+    log:{type:"alert", text:"Tether breach: visitor is 20.6m from host (limit 6.1m)"} },
+  { floor:1, visitor:[24,8], host:[23,8], zone:"Server room", risk:"TRUSTED",
+    log:{type:"alert", text:"Dwell anomaly: 590s in the server room (baseline 45s)"} },
+  { floor:1, visitor:[24,8], host:[23,8], tag:[12,4], zone:"Server room", risk:"TRUSTED",
+    log:{type:"alert", text:"Tag drop: TAG-777 stationary for 2.0 hrs"} },
+  { floor:1, visitor:[24,8], host:[23,8], zone:"Server room", risk:"TRUSTED",
+    log:{type:"info", text:"Fire alarm: mustering -- server room has 2 inside (1 stale)"},
+    panel:"Muster report: server room -- 2 inside, 1 stale position" },
+  { floor:1, visitor:[24,8], host:[23,8],
+    guards:[{id:"GRD-1", pos:[2,2], dist:22.8}, {id:"GRD-2", pos:[22,9], dist:2.2}, {id:"GRD-3", pos:[28,18], dist:10.8}],
+    zone:"Server room", risk:"TRUSTED",
+    log:{type:"info", text:"Breach -- dispatching nearest guard"},
+    panel:"Nearest responder: GRD-2 (2.2m) -- then GRD-3 (10.8m), GRD-1 (22.8m)" },
+];
+
+let current = -1;
+
+function setFloor(f) {
+  document.getElementById("floor1-group").style.display = f === 1 ? "block" : "none";
+  document.getElementById("floor2-group").style.display = f === 2 ? "block" : "none";
+  document.getElementById("floor1-btn").classList.toggle("active", f === 1);
+  document.getElementById("floor2-btn").classList.toggle("active", f === 2);
+}
+
+function place(id, x, y, isRect) {
+  const el = document.getElementById(id);
+  const [px, py] = toPx(x, y);
+  if (isRect) { el.setAttribute("x", px - 5); el.setAttribute("y", py - 5); }
+  else { el.setAttribute("cx", px); el.setAttribute("cy", py); }
+  el.style.display = "block";
+}
+
+function hide(id) { document.getElementById(id).style.display = "none"; }
+
+function appendLog(entry) {
+  const log = document.getElementById("log");
+  const row = document.createElement("div");
+  row.className = "log-row " + entry.type;
+  row.textContent = entry.text;
+  log.insertBefore(row, log.firstChild);
+}
+
+function renderStep(s) {
+  setFloor(s.floor);
+  place("marker-visitor", s.visitor[0], s.visitor[1]);
+  if (s.host) place("marker-host", s.host[0], s.host[1]); else hide("marker-host");
+  if (s.tag) place("marker-tag", s.tag[0], s.tag[1], true); else hide("marker-tag");
+  ["g1","g2","g3"].forEach((k, i) => {
+    if (s.guards && s.guards[i]) place("marker-" + k, s.guards[i].pos[0], s.guards[i].pos[1]);
+    else hide("marker-" + k);
+  });
+  document.getElementById("stat-zone").textContent = s.zone;
+  document.getElementById("stat-risk").textContent = s.risk;
+  const panel = document.getElementById("extra-panel");
+  if (s.panel) { panel.style.display = "block"; document.getElementById("extra-panel-text").textContent = s.panel; }
+  else { panel.style.display = "none"; }
+  appendLog(s.log);
+}
+
+function nextStep() {
+  current++;
+  if (current >= steps.length) { current = steps.length - 1; return; }
+  renderStep(steps[current]);
+  const btn = document.getElementById("next-btn");
+  btn.textContent = current === steps.length - 1 ? "Walkthrough complete" : "Next step";
+  if (current === steps.length - 1) btn.disabled = true;
+}
+
+function resetSim() {
+  current = -1;
+  document.getElementById("log").innerHTML = "";
+  document.getElementById("stat-zone").textContent = "–";
+  document.getElementById("stat-risk").textContent = "–";
+  document.getElementById("extra-panel").style.display = "none";
+  ["marker-visitor","marker-host","marker-tag","marker-g1","marker-g2","marker-g3"].forEach(hide);
+  const btn = document.getElementById("next-btn");
+  btn.textContent = "Start walkthrough";
+  btn.disabled = false;
+  setFloor(1);
+}
+
+setFloor(1);
+</script>
+</body>
+</html>
