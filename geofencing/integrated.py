@@ -299,6 +299,7 @@ class IntegratedVisitorManagement:
         position: PositionSample,
         zone_name: Optional[str] = None,
         badge_risk: float = 0.0,
+        host_id: Optional[str] = None,
     ) -> Dict:
         """
         Central method to ingest a position update from any source (GPS,
@@ -307,14 +308,21 @@ class IntegratedVisitorManagement:
           - Policy enforcement (tether, dwell, speed)
           - Tag health
           - Zone tracking
+
+        host_id: pass the escort's visitor_id to check tethering for this
+                 update. Omit for visitors with no escort requirement.
         """
         # Store last known position for mustering/dispatch
         self.last_known_positions[visitor_id] = position
 
-        # Resolve zone if not provided
+        # Resolve the zone profile either way -- we need zone_type below
+        # for dwell monitoring even when the caller already knows zone_name.
+        zone_profile: Optional[ZoneProfile] = None
         if zone_name is None and self.vms.building:
             zone_profile = self.resolve_zone_3d(position.position)
             zone_name = zone_profile.zone_name if zone_profile else None
+        elif zone_name and self.vms.building:
+            zone_profile = self.vms.building.get_zone(zone_name)
 
         if not zone_name or visitor_id not in self.vms.active_visitors:
             return {
@@ -336,11 +344,13 @@ class IntegratedVisitorManagement:
         alerts = []
 
         # Policy checks
-        tether_alert = self.check_escort_tether(visitor_id, "host_id")  # caller provides host_id
-        if tether_alert:
-            alerts.append(tether_alert)
+        if host_id:
+            tether_alert = self.check_escort_tether(visitor_id, host_id)
+            if tether_alert:
+                alerts.append(tether_alert)
 
-        dwell_alert = self.check_dwell_anomaly(visitor_id, zone_name, "lobby", position.timestamp_s)
+        zone_type = zone_profile.zone_type if zone_profile else "unknown"
+        dwell_alert = self.check_dwell_anomaly(visitor_id, zone_name, zone_type, position.timestamp_s)
         if dwell_alert:
             alerts.append(dwell_alert)
 
