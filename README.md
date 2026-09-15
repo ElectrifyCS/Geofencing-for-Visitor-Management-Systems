@@ -90,9 +90,10 @@ These upgrades directly address the live-testing challenges of coordinate drift 
 
 ## v2 roadmap: zone mapping, positioning, and real-time policy enforcement
 
-Six modules building toward a fuller production system: dynamic floor
+Eight modules building toward a fuller production system: dynamic floor
 plans, indoor positioning, real-time policy enforcement, incident
-response, and tag lifecycle management.
+response, tag lifecycle management, elevator/vertical tracking, and
+time-windowed authorization.
 
 - **`floorplan.py`** — blueprint-to-real-world coordinate calibration via
   a complex-number similarity transform, and a `ZoneHierarchy` that
@@ -118,11 +119,48 @@ response, and tag lifecycle management.
   `VisitorManagementSystem`: a single `update_visitor_position()` entry
   point runs spoofing detection, tether/dwell/tag-drop checks, and zone
   resolution together for one incoming position update.
+- **`elevator_tracking.py`** — 1D vertical position tracking for an
+  elevator car, fusing car-mounted accelerometer readings (control input
+  to a kinematic Kalman filter) with shaft-beacon floor-crossing events
+  (measurement corrections). Beacons are identified by ID via
+  `BeaconRegistry`, not inferred from an assumed crossing sequence —
+  earlier version of this module assumed sequential order, which a
+  missed detection could throw off by meters; fixed and verified against
+  that exact failure case.
+- **`permits.py`** — time-windowed zone/floor authorization
+  (`Permit`/`PermitRegistry`): the "schedules and permits" requirement
+  named in the architecture but missing from `Visitor.allowed_areas`,
+  which says *which* zones but never *when*. Deliberately built as one
+  general model — works for any `zone_id`, whether that's a
+  `ZoneProfile.zone_name` or an elevator `FloorBeacon.floor_id` — rather
+  than a zone-flavoured version and a separate floor-flavoured one.
 
 Math foundation ties to IB AA HL: complex numbers (blueprint calibration),
 vectors (distance/containment/directional checks), sequences and series
 (shoelace formula), statistics (z-score anomaly thresholds, variance),
-and systems of linear equations (multilateration).
+systems of linear equations (multilateration), and calculus (double
+integration of measured acceleration in the elevator Kalman filter).
+
+### Field validation status
+
+Beacon hardware for this project has been tested on-site at an active
+real-world multi-story facility — confirmed broadcasting and detectable
+throughout the building, including inside elevator shafts, and the core
+VMS detection pipeline processed that real on-site data successfully.
+
+`elevator_tracking.py` specifically is newer than that test — it didn't
+exist yet when the on-site beacon test ran, so it wasn't part of it. It's
+been built and validated through simulation (synthetic accelerometer
+noise, realistic kinematic motion profiles, and a proven-and-fixed edge
+case around missed beacon detections — see module docstring), and is
+undergoing its first on-site test against real hardware as of this
+update.
+
+Everything else in this section (`floorplan.py`, `multilateration.py`,
+`tracking.py`, `incident.py`, `tag_lifecycle.py`, `permits.py`) is
+validated the same way — rigorous simulation, not yet live hardware.
+This section will be updated as on-site results come in rather than
+claimed ahead of them.
 
 ### Live dashboard simulation
 
@@ -166,7 +204,9 @@ Geofencing-for-Visitor-Management-Systems/
 │   ├── tracking.py          # escort tethering, dwell monitoring, directional vectors
 │   ├── incident.py          # mustering + proximity dispatch
 │   ├── tag_lifecycle.py     # provisioning, battery health, anti-passback/tag-drop
-│   └── integrated.py        # wires the v2 modules into VisitorManagementSystem
+│   ├── integrated.py        # wires the v2 modules into VisitorManagementSystem
+│   ├── elevator_tracking.py # 1D Kalman vertical tracking, accelerometer + beacon fusion
+│   └── permits.py           # time-windowed zone/floor authorization
 ├── demo.py                  # self-contained demo (produces the two images above)
 ├── Geofencing.py             # thin backwards-compatible entry point
 ├── live_dashboard_simulation.html  # static walkthrough of the v2 scenario end to end
@@ -196,7 +236,7 @@ lobby = ZoneProfile(
 tg = TransitionGraph()
 tg.add_edge("parking", "main_lobby", max_time=180)
 
-layout = BuildingLayout("CBK HQ", zones=[lobby], transition_graph=tg)
+layout = BuildingLayout("Demo Facility HQ", zones=[lobby], transition_graph=tg)
 
 vms = VisitorManagementSystem()
 vms.set_building_layout(layout)
