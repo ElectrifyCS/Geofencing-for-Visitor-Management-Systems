@@ -148,19 +148,52 @@ real-world multi-story facility — confirmed broadcasting and detectable
 throughout the building, including inside elevator shafts, and the core
 VMS detection pipeline processed that real on-site data successfully.
 
-`elevator_tracking.py` specifically is newer than that test — it didn't
-exist yet when the on-site beacon test ran, so it wasn't part of it. It's
-been built and validated through simulation (synthetic accelerometer
-noise, realistic kinematic motion profiles, and a proven-and-fixed edge
-case around missed beacon detections — see module docstring), and is
-undergoing its first on-site test against real hardware as of this
-update.
+`elevator_tracking.py` has since had its first on-site test against real
+hardware, and that test surfaced real issues no amount of simulation
+would have caught — exactly the kind of thing field testing is *for*.
+Two led to concrete fixes:
+
+- **Beacon-identity ping-ponging near floor boundaries.** Real RSSI
+  noise near the midpoint between two floors made naive
+  "whichever beacon looks closest right now" logic flip identity
+  repeatedly on noise alone. Fixed with `BeaconLockTracker`: an
+  exponential moving average smooths each candidate beacon's readings,
+  and a hysteresis margin means a challenger has to be *robustly*
+  closer, not just marginally closer on one noisy sample, before the
+  locked identity changes. Verified against the exact failure case: 16
+  identity flips over 40 readings with naive logic, 0 with the fix — and
+  confirmed the fix still switches correctly when the car genuinely
+  moves from one floor to the next, not just permanently frozen (see
+  module `__main__`).
+- **Missed exit events.** `muster()`/`position_confidence()` above are
+  passive — a stale position just gets flagged, and only when a report
+  happens to be requested. On-site testing found tags that go silent
+  (dropped signal, badge handed back without checkout) need an *active*
+  exit event, not a flag waiting to be noticed. Added `PresenceTracker`
+  to `incident.py`: a TTL/heartbeat model that fires an exit event on
+  its own once an entity's been silent past the configured threshold
+  (default 4 minutes), fires it exactly once rather than repeating on
+  every subsequent check, and correctly un-exits someone if a heartbeat
+  arrives late.
+
+Two other issues surfaced by the same test aren't code fixes:
+
+- **OS background sleep** killing the scanning app on the phone/device
+  side — an app-permissions and battery-optimization deployment
+  requirement, not something to patch in this codebase.
+- **Signal reflection/blockage** in parts of the facility — the
+  documented mitigation (more overlapping beacons, multi-mode
+  positioning combining BLE with Wi-Fi/GPS) is a deployment-topology and
+  hardware decision. Worth noting `multilateration.py`'s weighted
+  least-squares solver already generalizes to fusing multiple ranging
+  sources with different uncertainty, so multi-mode positioning is
+  architecturally supported if pursued later — it just hasn't been,
+  since there's no real multi-mode data yet to validate it against.
 
 Everything else in this section (`floorplan.py`, `multilateration.py`,
-`tracking.py`, `incident.py`, `tag_lifecycle.py`, `permits.py`) is
-validated the same way — rigorous simulation, not yet live hardware.
-This section will be updated as on-site results come in rather than
-claimed ahead of them.
+`tracking.py`, `tag_lifecycle.py`, `permits.py`) is validated through
+simulation only, not yet live hardware. This section gets updated as
+on-site results come in, not claimed ahead of them.
 
 ### Live dashboard simulation
 

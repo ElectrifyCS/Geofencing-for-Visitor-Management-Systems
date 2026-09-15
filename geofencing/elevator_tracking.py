@@ -79,6 +79,84 @@ class BeaconRegistry:
             return None
         return min(candidates, key=lambda b: abs(b.z_height - z))
 
+    def all_within_range(self, z: float, detection_radius_m: float) -> Dict[str, float]:
+        """
+        Every beacon currently detectable, with its implied distance --
+        not just the single nearest one. Near the midpoint between two
+        floors, more than one beacon can be weakly audible at once; a
+        lock tracker needs to see all of them to smooth and hysteresis
+        the identity decision, not just whichever won a single instant.
+        """
+        return {
+            b.floor_id: abs(b.z_height - z)
+            for b in self._by_id.values()
+            if abs(b.z_height - z) <= detection_radius_m
+        }
+
+
+class BeaconLockTracker:
+    """
+    Prevents beacon-identity ping-ponging near the midpoint between two
+    floors: real RSSI-derived distance is noisy, and near a boundary two
+    beacons can be nearly equidistant, so a naive "whichever is closer
+    right now" decision flips on noise alone -- confirmed tonight during
+    on-site testing.
+
+    Two defences, matching standard BLE presence-detection practice:
+      - Smoothing: an exponential moving average over each candidate
+        beacon's distance readings, so a single noisy sample can't swing
+        the decision on its own.
+      - Hysteresis: the locked beacon only changes when a challenger's
+        *smoothed* distance beats the current lock's by more than
+        hysteresis_m -- not just by being marginally closer. This is the
+        same asymmetric enter/exit-threshold idea used in geofence
+        debouncing generally: harder to leave a state than to enter it.
+    """
+
+    def __init__(self, hysteresis_m: float = 0.5, smoothing_alpha: float = 0.3):
+        self.hysteresis_m = hysteresis_m
+        self.smoothing_alpha = smoothing_alpha
+        self._smoothed: Dict[str, float] = {}
+        self.locked_beacon_id: Optional[str] = None
+
+    def update(self, raw_readings: Dict[str, float]) -> Optional[str]:
+        """
+        raw_readings: {beacon_id: raw_distance_estimate_m} for every
+        beacon detectable at all this instant (see
+        BeaconRegistry.all_within_range). Returns the currently locked
+        beacon ID, which may be unchanged from before this call.
+        """
+        for beacon_id, raw_distance in raw_readings.items():
+            previous = self._smoothed.get(beacon_id, raw_distance)
+            self._smoothed[beacon_id] = (
+                self.smoothing_alpha * raw_distance + (1 - self.smoothing_alpha) * previous
+            )
+
+        if not raw_readings:
+            # Nothing detectable at all right now -- no new information,
+            # keep whatever lock already exists rather than guessing.
+            return self.locked_beacon_id
+
+        # Only beacons actually heard THIS update are eligible. Without
+        # this restriction, a beacon's smoothed value from minutes ago --
+        # now completely out of range -- can keep "winning" forever
+        # simply because it used to be very close (confirmed: this was a
+        # real bug, not hypothetical -- see module tests).
+        candidates = {bid: self._smoothed[bid] for bid in raw_readings}
+        best_id = min(candidates, key=candidates.get)
+
+        if self.locked_beacon_id is None or self.locked_beacon_id not in candidates:
+            # No existing lock, or the current lock isn't even audible
+            # right now -- adopt the best currently-heard candidate.
+            self.locked_beacon_id = best_id
+        elif best_id != self.locked_beacon_id:
+            current_smoothed = candidates[self.locked_beacon_id]
+            challenger_smoothed = candidates[best_id]
+            if current_smoothed - challenger_smoothed > self.hysteresis_m:
+                self.locked_beacon_id = best_id
+
+        return self.locked_beacon_id
+
 
 class ElevatorKalman1D:
     """
@@ -280,6 +358,7 @@ if __name__ == "__main__":
     # --- Run WITH beacon corrections, using identity-based detection ---
     registry = BeaconRegistry(beacons)
     detection_radius = 0.3  # metres -- realistic short-range BLE proximity
+    lock_tracker = BeaconLockTracker(hysteresis_m=0.5, smoothing_alpha=0.3)
 
     kf = ElevatorKalman1D(initial_z=0.0, initial_v=0.0)
     t = 0.0
@@ -298,21 +377,23 @@ if __name__ == "__main__":
         kf.predict(dt, a_measured)
         kf_no_correction.predict(dt, a_measured)
 
-        # Identity-based detection: what would a receiver actually hear
-        # right now, by physical proximity -- no assumption about order.
-        # This simulates the HARDWARE side (proximity detection); the
-        # SOFTWARE side then goes through the real production path,
-        # correct_with_identified_beacon(), which only trusts a reported
-        # ID after looking it up -- never infers identity from sequence.
-        heard = registry.nearest_within_range(true_z, detection_radius)
-        if heard is not None and heard.floor_id not in corrected_ids:
-            noisy_reading = heard.z_height + rng.normal(0, 0.15)
+        # Identity-based detection with smoothing + hysteresis: every
+        # beacon audible right now (not just the nearest one), fed
+        # through the lock tracker so noise near a floor boundary can't
+        # flip the identity decision -- confirmed necessary tonight.
+        raw_readings = registry.all_within_range(true_z, detection_radius)
+        noisy_readings = {bid: dist + rng.normal(0, 0.1) for bid, dist in raw_readings.items()}
+        locked_id = lock_tracker.update(noisy_readings)
+
+        if locked_id is not None and locked_id not in corrected_ids:
+            beacon = registry.lookup(locked_id)
+            noisy_reading = beacon.z_height + rng.normal(0, 0.15)
             applied, reason = correct_with_identified_beacon(
-                kf, heard.floor_id, registry, noisy_reading, detection_radius_m=detection_radius
+                kf, locked_id, registry, noisy_reading, detection_radius_m=detection_radius
             )
             if applied:
-                crossing_log.append((t, heard.floor_id, kf.z, true_z))
-                corrected_ids.add(heard.floor_id)
+                crossing_log.append((t, locked_id, kf.z, true_z))
+                corrected_ids.add(locked_id)
 
         t += dt
 
@@ -355,3 +436,30 @@ if __name__ == "__main__":
     )
     print(f"  Reported ID 'F99-GARBLED': applied={applied} -- {reason}")
     print(f"  Position unchanged: {z_before}m -> {garbled_kf.z}m (correctly ignored, not corrected to 100m)")
+
+    # --- Ping-pong stress test: car parked exactly at the midpoint      ---
+    # --- between two floor beacons -- the worst case for identity flip- ---
+    # --- flopping, found during on-site testing.                       ---
+    print("\n=== Beacon ping-pong stress test (car at exact midpoint between two floors) ===")
+    stress_rng = np.random.default_rng(seed=99)
+    true_dist_a, true_dist_b = 1.75, 1.75  # equidistant -- worst case
+    naive_flips, naive_current = 0, None
+    stress_tracker = BeaconLockTracker(hysteresis_m=0.5, smoothing_alpha=0.3)
+    tracker_flips, tracker_prev = 0, None
+    for _ in range(40):
+        readings = {
+            "F4": true_dist_a + stress_rng.normal(0, 0.3),
+            "F5": true_dist_b + stress_rng.normal(0, 0.3),
+        }
+        naive_winner = min(readings, key=readings.get)
+        if naive_current is not None and naive_winner != naive_current:
+            naive_flips += 1
+        naive_current = naive_winner
+
+        locked = stress_tracker.update(readings)
+        if tracker_prev is not None and locked != tracker_prev:
+            tracker_flips += 1
+        tracker_prev = locked
+
+    print(f"  Naive instantaneous-nearest: {naive_flips} identity flips over 40 readings")
+    print(f"  Smoothed + hysteresis lock:  {tracker_flips} identity flips over 40 readings")

@@ -91,6 +91,58 @@ def muster(
 
 
 # ---------------------------------------------------------------------------
+# Active presence tracking (TTL / heartbeat exit detection)
+# ---------------------------------------------------------------------------
+# muster() and position_confidence() above are passive: a stale position
+# just gets flagged, and only when someone happens to run a report. Real
+# on-site testing found tags that stop reporting (signal dropout, tag
+# left behind, badge handed back without checkout) need an ACTIVE exit
+# event fired on their own -- not just a flag waiting to be noticed.
+
+@dataclass
+class ExitEvent:
+    entity_id: str
+    last_seen_s: float
+    silent_for_s: float
+
+
+class PresenceTracker:
+    """
+    TTL/heartbeat presence tracking: call heartbeat() every time a
+    position update arrives for an entity, and check_exits() on a
+    regular timer (e.g. every 30-60s) -- not just when a muster report
+    happens to be requested. Anyone silent longer than ttl_s gets an
+    exit event fired exactly once, not repeated on every subsequent
+    check while still silent.
+    """
+
+    def __init__(self, ttl_s: float = 240.0):  # 4 minutes, within the requested 3-5 min range
+        self.ttl_s = ttl_s
+        self._last_seen: Dict[str, float] = {}
+        self._exited: set = set()
+
+    def heartbeat(self, entity_id: str, timestamp_s: float) -> None:
+        """Call on every position update. A fresh heartbeat un-exits someone who'd been flagged."""
+        self._last_seen[entity_id] = timestamp_s
+        self._exited.discard(entity_id)
+
+    def check_exits(self, now_s: float) -> List[ExitEvent]:
+        """Returns exit events for anyone silent past the TTL who hasn't already been flagged."""
+        events = []
+        for entity_id, last_seen in self._last_seen.items():
+            if entity_id in self._exited:
+                continue
+            silent_for = now_s - last_seen
+            if silent_for >= self.ttl_s:
+                events.append(ExitEvent(entity_id=entity_id, last_seen_s=last_seen, silent_for_s=silent_for))
+                self._exited.add(entity_id)
+        return events
+
+    def is_present(self, entity_id: str) -> bool:
+        return entity_id in self._last_seen and entity_id not in self._exited
+
+
+# ---------------------------------------------------------------------------
 # Proximity dispatch
 # ---------------------------------------------------------------------------
 
@@ -168,3 +220,33 @@ if __name__ == "__main__":
     }
     for candidate in nearest_guards(incident_position, guards, top_n=3):
         print(f"  {candidate.guard_id}: {candidate.distance_m:.1f}m away")
+
+    # --- Active presence / TTL exit demo ---
+    print("\n=== Active presence tracking (TTL exit events) ===")
+    presence = PresenceTracker(ttl_s=240.0)
+
+    presence.heartbeat("VIS-5", timestamp_s=0.0)
+    presence.heartbeat("VIS-6", timestamp_s=0.0)
+
+    # VIS-6 keeps reporting normally; VIS-5 goes silent (dropped signal,
+    # tag left behind, badge handed back without checkout).
+    for t in (60.0, 120.0, 180.0):
+        presence.heartbeat("VIS-6", timestamp_s=t)
+        events = presence.check_exits(now_s=t)
+        for e in events:
+            print(f"  t={t:.0f}s: EXIT EVENT -- {e.entity_id} silent for {e.silent_for_s:.0f}s")
+        if not events:
+            print(f"  t={t:.0f}s: no exit events (VIS-5 silent {t:.0f}s so far, under the {presence.ttl_s:.0f}s TTL)")
+
+    # Past the TTL now -- VIS-5 should fire exactly once.
+    events = presence.check_exits(now_s=250.0)
+    for e in events:
+        print(f"  t=250s: EXIT EVENT -- {e.entity_id} silent for {e.silent_for_s:.0f}s")
+
+    # Checking again later without a new heartbeat should NOT re-fire.
+    events_again = presence.check_exits(now_s=400.0)
+    print(f"  t=400s: re-check without new heartbeat -- {len(events_again)} new events (should be 0, already flagged)")
+
+    # A late heartbeat un-exits them.
+    presence.heartbeat("VIS-5", timestamp_s=450.0)
+    print(f"  t=450s: VIS-5 sends a heartbeat again -- is_present={presence.is_present('VIS-5')}")
