@@ -13,7 +13,8 @@ This layer provides:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
+import math
 from typing import Dict, List, Optional, Tuple
 
 from .models import (
@@ -24,7 +25,7 @@ from .floorplan import ZoneHierarchy, CoordinateCalibrator
 from .multilateration import multilaterate, Anchor, Ranging, rssi_to_distance
 from .tracking import (
     PositionSample, TetherMonitor, DwellMonitor, DwellBaseline,
-    compute_heading, intent_angle_deg, ZoneLockTracker
+    compute_heading, intent_angle_deg, ZoneLockTracker, FEET_TO_METRES
 )
 from .incident import muster, nearest_guards, PresenceTracker
 from .tag_lifecycle import (
@@ -32,6 +33,7 @@ from .tag_lifecycle import (
     check_speed_anomaly, TagDropDetector, ReliabilityWarmup
 )
 from .event_log import EventLog
+from .permits import Permit, PermitRegistry
 
 
 class IntegratedVisitorManagement:
@@ -59,6 +61,11 @@ class IntegratedVisitorManagement:
         self.zone_lock_trackers: Dict[str, ZoneLockTracker] = {}
         self.presence_tracker = PresenceTracker(ttl_s=presence_ttl_s)
         self.reliability_warmup = ReliabilityWarmup()
+        self.permit_registry = PermitRegistry()
+        # visitor_id -> host/escort visitor_id, set at check-in for
+        # escorted tags. Escort *presence* is verified live against
+        # actual proximity, not just assumed from this mapping.
+        self.escort_assignments: Dict[str, str] = {}
 
     # =========================================================================
     # Zone Hierarchy & Floor-Aware Containment
@@ -314,9 +321,124 @@ class IntegratedVisitorManagement:
         ]
 
     # =========================================================================
-    # Unified Position Update Handler
+    # Dynamic Tag Access: check-in -> permits
     # =========================================================================
 
+    def check_in_visitor(
+        self,
+        visitor_id: str,
+        stated_destinations: List[str],
+        now: datetime,
+        duration_hours: float = 8.0,
+        tag_type: str = "standard",
+        host_id: Optional[str] = None,
+    ) -> Dict:
+        """
+        Turn a guest's stated destination + tag type into actual, live
+        zone rights -- the missing layer field testing identified.
+
+        Before this, Visitor.allowed_areas was a static list: a guest who
+        said "IT department" at reception was still treated per whatever
+        that list happened to contain, so legitimate visits looked like
+        violations and the system never proactively authorized anything.
+
+        Tag types:
+          "standard" -- ordinary guest tag. Gets time-windowed permits
+            for public and escort_required destinations. Cannot be
+            granted a "prohibited" zone at all; that needs an escorted
+            tag, and reception issuing one is a deliberate act.
+          "escorted" -- issued when a guest is accompanied by internal
+            staff. Can reach "prohibited" zones (server rooms etc.), but
+            every permit it grants for a non-public zone carries
+            requires_escort=True, so the right is conditional on the
+            host actually being present, checked live against proximity
+            rather than assumed from the assignment.
+
+        Returns a summary of what was granted and what was refused, with
+        a reason for each refusal -- reception needs to see why, not
+        just that something didn't work.
+        """
+        granted: List[Dict] = []
+        refused: List[Dict] = []
+        valid_until = now + timedelta(hours=duration_hours)
+
+        if host_id:
+            self.escort_assignments[visitor_id] = host_id
+
+        for zone_name in stated_destinations:
+            zone = self.vms.building.get_zone(zone_name) if self.vms.building else None
+            if zone is None:
+                refused.append({"zone_id": zone_name, "reason": f"Unknown zone '{zone_name}'"})
+                continue
+
+            risk = zone.risk_level
+            if risk == "prohibited" and tag_type != "escorted":
+                refused.append({
+                    "zone_id": zone_name,
+                    "reason": f"'{zone_name}' is prohibited; requires an escorted tag, not '{tag_type}'",
+                })
+                self.event_log.log(
+                    now.timestamp(), "permit_denied", visitor_id,
+                    f"Check-in refused for {zone_name}: prohibited zone needs an escorted tag",
+                    zone_id=zone_name, risk_level=risk, source_module="permits",
+                )
+                continue
+
+            if risk == "escort_required" and tag_type != "escorted" and not host_id:
+                refused.append({
+                    "zone_id": zone_name,
+                    "reason": f"'{zone_name}' requires an escort; no host assigned at check-in",
+                })
+                self.event_log.log(
+                    now.timestamp(), "permit_denied", visitor_id,
+                    f"Check-in refused for {zone_name}: escort-required zone with no host assigned",
+                    zone_id=zone_name, risk_level=risk, source_module="permits",
+                )
+                continue
+
+            needs_escort = risk in ("escort_required", "prohibited")
+            self.permit_registry.add(Permit(
+                visitor_id=visitor_id, zone_id=zone_name,
+                valid_from=now, valid_until=valid_until,
+                requires_escort=needs_escort,
+            ))
+            granted.append({
+                "zone_id": zone_name, "risk_level": risk,
+                "requires_escort": needs_escort, "valid_until": valid_until,
+            })
+            self.event_log.log(
+                now.timestamp(), "permit_granted", visitor_id,
+                f"Permit issued for {zone_name} until {valid_until:%H:%M}"
+                + (" (escort required)" if needs_escort else ""),
+                zone_id=zone_name, risk_level=risk, source_module="permits",
+            )
+
+        return {
+            "visitor_id": visitor_id, "tag_type": tag_type,
+            "host_id": host_id, "granted": granted, "refused": refused,
+        }
+
+    def is_escort_present(
+        self, visitor_id: str, position: PositionSample, max_distance_ft: float = 20.0
+    ) -> bool:
+        """
+        Escort presence is verified, not assumed: the assigned host must
+        actually be within tether range right now. An escorted tag whose
+        host wandered off is not an escorted visit any more, which is
+        exactly the case a static allowed_areas list could never catch.
+        """
+        host_id = self.escort_assignments.get(visitor_id)
+        if host_id is None:
+            return False
+        host_position = self.last_known_positions.get(host_id)
+        if host_position is None:
+            return False
+        distance = math.dist(position.position, host_position.position)
+        return distance <= max_distance_ft * FEET_TO_METRES
+
+    # =========================================================================
+    # Unified Position Update Handler
+    # =========================================================================
     def update_visitor_position(
         self,
         visitor_id: str,
@@ -399,6 +521,30 @@ class IntegratedVisitorManagement:
                     zone_id=confirmed_zone, risk_level=zone_risk, source_module="integrated",
                 )
             self.last_known_zones[visitor_id] = confirmed_zone
+
+            # Authorization is evaluated on confirmed zone *entry*, not
+            # every position sample: a guest standing in a server room
+            # for ten minutes is one unauthorized-entry decision, not
+            # 600 identical denials flooding the dashboard. Debounced
+            # entry is exactly the right trigger point for it.
+            if confirmed_zone is not None:
+                escort_present = self.is_escort_present(visitor_id, position)
+                authorized, reason = self.permit_registry.check(
+                    visitor_id, confirmed_zone,
+                    datetime.fromtimestamp(position.timestamp_s),
+                    escort_present=escort_present,
+                )
+                if not authorized:
+                    alerts.append(f"UNAUTHORIZED ZONE: {reason}")
+                    self.event_log.log(
+                        position.timestamp_s, "permit_denied", visitor_id, reason,
+                        zone_id=confirmed_zone, risk_level=zone_risk, source_module="permits",
+                    )
+                else:
+                    self.event_log.log(
+                        position.timestamp_s, "permit_authorized", visitor_id, reason,
+                        zone_id=confirmed_zone, risk_level=zone_risk, source_module="permits",
+                    )
 
         # Policy checks -- suppressed while warming up, logged as
         # suppressed (not silently dropped) for audit visibility.
