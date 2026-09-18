@@ -108,13 +108,21 @@ time-windowed authorization.
   module docstring for why, and the per-floor-anchor-network mitigation).
 - **`tracking.py`** — escort tethering (confidence-aware distance
   threshold), dwell time anomaly detection (z-score against a per-zone
-  baseline), and directional-vector intent detection (dot-product angle
-  toward a target).
+  baseline), directional-vector intent detection (dot-product angle
+  toward a target), and `ZoneLockTracker` — debounced zone entry/exit
+  (a candidate zone must be observed 3 consecutive times before the
+  lock changes), preventing boundary ping-pong the same way
+  `elevator_tracking.py`'s `BeaconLockTracker` does for floor identity.
 - **`incident.py`** — automated mustering with staleness-decayed position
-  confidence, and nearest-guard proximity dispatch.
+  confidence, nearest-guard proximity dispatch, and `PresenceTracker` —
+  active TTL/heartbeat exit detection for tags that go silent.
 - **`tag_lifecycle.py`** — tag provisioning, battery discharge-rate
-  prediction (linear regression), and anti-passback / tag-drop detection
-  (speed-anomaly + rolling-variance stationary detection).
+  prediction (linear regression), anti-passback / tag-drop detection
+  (speed-anomaly + rolling-variance stationary detection), and
+  `ReliabilityWarmup` — suppresses alerts on a freshly-reconnected tag's
+  first few readings (same start-conservative principle as `kalman.py`'s
+  logarithmic convergence factor), since burst noise on wake is a real,
+  proven false-positive source.
 - **`integrated.py`** — wires the four modules above into
   `VisitorManagementSystem`: a single `update_visitor_position()` entry
   point runs spoofing detection, tether/dwell/tag-drop checks, and zone
@@ -190,10 +198,46 @@ Two other issues surfaced by the same test aren't code fixes:
   architecturally supported if pursued later — it just hasn't been,
   since there's no real multi-mode data yet to validate it against.
 
-Everything else in this section (`floorplan.py`, `multilateration.py`,
-`tracking.py`, `tag_lifecycle.py`, `permits.py`) is validated through
-simulation only, not yet live hardware. This section gets updated as
-on-site results come in, not claimed ahead of them.
+Everything else in this section (`event_log.py`) is validated through
+simulation only, not yet live hardware.
+
+`floorplan.py`, `multilateration.py`, `tracking.py`, `tag_lifecycle.py`,
+and `permits.py` have since had their own first on-site test, across
+multiple buildings. Three real issues found led to concrete fixes,
+using the exact same patterns proven above rather than inventing new
+ones:
+
+- **Zone-boundary ping-ponging** — the same failure mode as the beacon
+  one above, this time for zone entry/exit. Caught a live instance of
+  it in this project's own code: `integrated.py`'s zone transition
+  logging had no debounce at all until this testing found it. Fixed
+  with `ZoneLockTracker` (`tracking.py`) — a candidate zone must be
+  observed 3 consecutive times before the lock changes. Verified: 24
+  raw flips down to 3 over 50 readings under aggressive boundary
+  jitter, while a real sustained transition still confirms correctly.
+- **Stale/zombie tags** — `PresenceTracker` already existed, tested
+  standalone, but was never actually wired into the position-update
+  pipeline. Fixed by connecting it; every position update is now a
+  heartbeat.
+- **Burst noise on tag reconnection** — a freshly-reconnected tag's
+  first few readings are often erratic. Fixed with `ReliabilityWarmup`
+  (`tag_lifecycle.py`), the same start-conservative-earn-confidence
+  principle `kalman.py`'s logarithmic convergence factor already uses
+  elsewhere in this project, reapplied here as alert suppression.
+  Verified end-to-end: a real tether breach present from the first
+  reading is correctly suppressed for 3 readings, then fires normally —
+  logged as suppressed, not silently dropped.
+
+Real issues still open from this round, not yet fixed: coordinate
+calibration accuracy under real blueprint distortion, multipath-induced
+position spikes, dilution-of-precision in narrow anchor corridors, and
+smoothing-filter lag on high-risk zone breaches. Full detail, including
+one flagged concern (non-convex polygon containment) that was tested
+directly and found to already work correctly, is in
+[`TESTING.md`](TESTING.md).
+
+This section gets updated as on-site results come in, not claimed
+ahead of them.
 
 ### Live dashboard simulation
 
