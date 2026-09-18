@@ -24,13 +24,14 @@ from .floorplan import ZoneHierarchy, CoordinateCalibrator
 from .multilateration import multilaterate, Anchor, Ranging, rssi_to_distance
 from .tracking import (
     PositionSample, TetherMonitor, DwellMonitor, DwellBaseline,
-    compute_heading, intent_angle_deg
+    compute_heading, intent_angle_deg, ZoneLockTracker
 )
-from .incident import muster, nearest_guards
+from .incident import muster, nearest_guards, PresenceTracker
 from .tag_lifecycle import (
     TagRegistry, predict_battery, BatteryReading,
-    check_speed_anomaly, TagDropDetector
+    check_speed_anomaly, TagDropDetector, ReliabilityWarmup
 )
+from .event_log import EventLog
 
 
 class IntegratedVisitorManagement:
@@ -41,7 +42,7 @@ class IntegratedVisitorManagement:
     and real-time policy enforcement is critical.
     """
 
-    def __init__(self, vms: VisitorManagementSystem):
+    def __init__(self, vms: VisitorManagementSystem, presence_ttl_s: float = 240.0):
         self.vms = vms
         self.zone_hierarchy = ZoneHierarchy()
         self.tag_registry = TagRegistry()
@@ -51,6 +52,13 @@ class IntegratedVisitorManagement:
         self.last_known_positions: Dict[str, PositionSample] = {}
         self.anchor_network: Dict[str, Anchor] = {}
         self.coordinate_calibrator: Optional[CoordinateCalibrator] = None
+        self.event_log = EventLog()
+        self.last_known_zones: Dict[str, str] = {}
+        # Both built and tested standalone earlier, neither previously
+        # wired into the actual position-update pipeline -- fixed below.
+        self.zone_lock_trackers: Dict[str, ZoneLockTracker] = {}
+        self.presence_tracker = PresenceTracker(ttl_s=presence_ttl_s)
+        self.reliability_warmup = ReliabilityWarmup()
 
     # =========================================================================
     # Zone Hierarchy & Floor-Aware Containment
@@ -242,6 +250,22 @@ class IntegratedVisitorManagement:
     # Emergency Response: Automated Mustering
     # =========================================================================
 
+    def check_for_presence_exits(self, now_s: float) -> List:
+        """
+        Call on a regular timer (e.g. every 30-60s) -- not per position
+        update, since this is about detecting *silence*, which by
+        definition doesn't arrive as an update. Any exit event found is
+        also logged, so the dashboard sees it, not just the caller.
+        """
+        events = self.presence_tracker.check_exits(now_s)
+        for e in events:
+            self.event_log.log(
+                now_s, "presence_exit", e.entity_id,
+                f"Silent for {e.silent_for_s:.0f}s (TTL {self.presence_tracker.ttl_s:.0f}s)",
+                source_module="incident",
+            )
+        return events
+
     def muster_report(self, now_s: float) -> Dict:
         """
         Generate evacuation headcount: group all visitors by last-known zone,
@@ -341,22 +365,86 @@ class IntegratedVisitorManagement:
         # Run core geofencing verification
         report = self.vms.verify_visitor_location(visitor_id, zone_name, [pos], badge_risk=badge_risk)
 
-        alerts = []
+        # Every position update is a heartbeat -- keeps PresenceTracker's
+        # TTL/exit logic fed regardless of what else happens this update.
+        self.presence_tracker.heartbeat(visitor_id, position.timestamp_s)
 
-        # Policy checks
+        # Burst-noise warm-up: a tag's first few readings after a real
+        # silence (sleep, dropped connection) are often erratic -- same
+        # start-conservative principle as kalman.py's c(n), applied here
+        # to suppress ALERT-worthy anomaly checks specifically, not the
+        # underlying position/zone tracking, which keeps running normally.
+        is_warming_up = self.reliability_warmup.update(visitor_id, position.timestamp_s)
+
+        alerts = []
+        zone_risk = zone_profile.risk_level if zone_profile else None
+
+        # Zone transition logging, debounced through ZoneLockTracker --
+        # a raw zone flip only becomes a real zone_exit/zone_entry event
+        # once it's been observed 3 consecutive times, not on a single
+        # noisy reading near a boundary (the exact ping-pong failure
+        # mode found by on-site testing).
+        lock_tracker = self.zone_lock_trackers.setdefault(visitor_id, ZoneLockTracker())
+        previous_confirmed = lock_tracker.locked_zone
+        confirmed_zone = lock_tracker.update(zone_name)
+        if confirmed_zone != previous_confirmed:
+            if previous_confirmed is not None:
+                self.event_log.log(
+                    position.timestamp_s, "zone_exit", visitor_id, f"Left {previous_confirmed}",
+                    zone_id=previous_confirmed, source_module="integrated",
+                )
+            if confirmed_zone is not None:
+                self.event_log.log(
+                    position.timestamp_s, "zone_entry", visitor_id, f"Entered {confirmed_zone}",
+                    zone_id=confirmed_zone, risk_level=zone_risk, source_module="integrated",
+                )
+            self.last_known_zones[visitor_id] = confirmed_zone
+
+        # Policy checks -- suppressed while warming up, logged as
+        # suppressed (not silently dropped) for audit visibility.
         if host_id:
             tether_alert = self.check_escort_tether(visitor_id, host_id)
-            if tether_alert:
+            if tether_alert and is_warming_up:
+                self.event_log.log(
+                    position.timestamp_s, "alert_suppressed_warmup", visitor_id,
+                    f"Tether breach suppressed (reliability warm-up): {tether_alert}",
+                    zone_id=zone_name, risk_level=zone_risk, source_module="integrated",
+                )
+            elif tether_alert:
                 alerts.append(tether_alert)
+                self.event_log.log(
+                    position.timestamp_s, "tether_breach", visitor_id, tether_alert,
+                    zone_id=zone_name, risk_level=zone_risk, source_module="tracking",
+                )
 
         zone_type = zone_profile.zone_type if zone_profile else "unknown"
         dwell_alert = self.check_dwell_anomaly(visitor_id, zone_name, zone_type, position.timestamp_s)
-        if dwell_alert:
+        if dwell_alert and is_warming_up:
+            self.event_log.log(
+                position.timestamp_s, "alert_suppressed_warmup", visitor_id,
+                f"Dwell anomaly suppressed (reliability warm-up): {dwell_alert}",
+                zone_id=zone_name, risk_level=zone_risk, source_module="integrated",
+            )
+        elif dwell_alert:
             alerts.append(dwell_alert)
+            self.event_log.log(
+                position.timestamp_s, "dwell_anomaly", visitor_id, dwell_alert,
+                zone_id=zone_name, risk_level=zone_risk, source_module="tracking",
+            )
 
         tag_drop_alert = self.check_tag_drop(visitor_id, position)
-        if tag_drop_alert:
+        if tag_drop_alert and is_warming_up:
+            self.event_log.log(
+                position.timestamp_s, "alert_suppressed_warmup", visitor_id,
+                f"Tag drop suppressed (reliability warm-up): {tag_drop_alert}",
+                zone_id=zone_name, risk_level=zone_risk, source_module="integrated",
+            )
+        elif tag_drop_alert:
             alerts.append(tag_drop_alert)
+            self.event_log.log(
+                position.timestamp_s, "tag_drop", visitor_id, tag_drop_alert,
+                zone_id=zone_name, risk_level=zone_risk, source_module="tag_lifecycle",
+            )
 
         return {
             "status": "success",
