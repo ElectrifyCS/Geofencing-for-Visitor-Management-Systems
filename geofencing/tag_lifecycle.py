@@ -15,6 +15,12 @@ Math foundation (IB AA HL tie-ins):
     over a sliding window -- statistics (variance/standard deviation),
     the mirror image of tracking.py's dwell-time anomaly (there: flag
     too-long-moving-through; here: flag too-long-not-moving-at-all).
+  - ReliabilityWarmup: same "start conservative, earn confidence over
+    time" principle as kalman.py's logarithmic convergence factor c(n),
+    applied to alert suppression on freshly-reconnected tags rather
+    than Kalman gain -- these v2 modules don't share geofence.py's
+    filter state directly, so the principle is reapplied here, not the
+    literal c(n) formula.
 """
 
 from __future__ import annotations
@@ -222,6 +228,48 @@ class TagDropDetector:
         return None
 
 
+class ReliabilityWarmup:
+    """
+    A freshly-reconnected tag's first few readings after waking from
+    sleep (or any real silence) are often erratic before the tracking
+    filter stabilizes -- confirmed on-site: this caused false-positive
+    perimeter breaches right at initialization.
+
+    Same principle kalman.py's c(n) already uses elsewhere in this
+    project (start conservative, earn confidence as evidence arrives),
+    reapplied here as alert suppression rather than Kalman gain
+    adjustment, since these newer modules don't share that filter
+    state directly.
+    """
+
+    def __init__(self, warmup_readings: int = 3, silence_threshold_s: float = 60.0):
+        self.warmup_readings = warmup_readings
+        self.silence_threshold_s = silence_threshold_s
+        self._last_seen: Dict[str, float] = {}
+        self._readings_since_reappearance: Dict[str, int] = {}
+
+    def update(self, entity_id: str, timestamp_s: float) -> bool:
+        """
+        Call on every position update, before deciding whether to act
+        on any alert for this reading. Returns True if this reading
+        falls within the warm-up window (alerts should be suppressed,
+        though the position/zone tracking itself still runs normally),
+        False once the tag's been consistently present long enough to
+        trust its readings again.
+        """
+        last = self._last_seen.get(entity_id)
+        self._last_seen[entity_id] = timestamp_s
+
+        if last is None or (timestamp_s - last) > self.silence_threshold_s:
+            # Never seen before, or a real gap -- (re)start the warm-up count.
+            self._readings_since_reappearance[entity_id] = 0
+
+        count = self._readings_since_reappearance.get(entity_id, self.warmup_readings)
+        is_warming_up = count < self.warmup_readings
+        self._readings_since_reappearance[entity_id] = count + 1
+        return is_warming_up
+
+
 if __name__ == "__main__":
     print("=== Rapid provisioning ===")
     registry = TagRegistry()
@@ -269,3 +317,14 @@ if __name__ == "__main__":
               f"position std {result.position_std_m * 100:.1f}cm -> TAG DROP FLAGGED")
     else:
         print("  no tag drop detected")
+
+    print("\n=== Burst-noise warm-up after reconnection ===")
+    warmup = ReliabilityWarmup(warmup_readings=3, silence_threshold_s=60.0)
+    # First contact ever -- should warm up
+    print(f"  t=0s   (first ever contact):        warming_up={warmup.update('TAG-500', 0.0)}")
+    print(f"  t=5s   (2nd reading, still fresh):   warming_up={warmup.update('TAG-500', 5.0)}")
+    print(f"  t=10s  (3rd reading):                warming_up={warmup.update('TAG-500', 10.0)}")
+    print(f"  t=15s  (4th reading, should trust):  warming_up={warmup.update('TAG-500', 15.0)}")
+    print(f"  t=20s  (5th, still trusted):         warming_up={warmup.update('TAG-500', 20.0)}")
+    # Now a real gap (tag went to sleep for 2 minutes) -- should re-warm-up
+    print(f"  t=140s (after 120s silence):         warming_up={warmup.update('TAG-500', 140.0)}")

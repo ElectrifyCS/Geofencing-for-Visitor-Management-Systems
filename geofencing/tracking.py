@@ -20,6 +20,13 @@ Math foundation (IB AA HL tie-ins):
     position (rate of change); heading via atan2 (inverse trig); "is this
     person walking toward that door" via the dot product angle-between-
     vectors formula, cos(theta) = (v . d) / (|v||d|).
+  - ZoneDebouncer: the same hysteresis principle as
+    elevator_tracking.py's BeaconLockTracker, applied to zone
+    containment instead of beacon identity -- a stationary tag exactly
+    on a zone boundary produces noisy in/out readings; requiring several
+    consecutive agreeing readings before committing to a transition
+    stops that noise from spamming zone_entry/zone_exit events. Found
+    as a real gap by on-site testing.
 """
 
 from __future__ import annotations
@@ -144,6 +151,55 @@ class DwellMonitor:
                 baseline_mean_s=baseline.mean_s, timestamp_s=timestamp_s,
             )
         return None
+
+
+# ---------------------------------------------------------------------------
+# Zone-transition debouncing (ping-pong prevention)
+# ---------------------------------------------------------------------------
+# Same underlying problem elevator_tracking.py's BeaconLockTracker solves
+# for beacon identity -- a tag hovering right at a boundary between two
+# zones shouldn't fire an endless stream of zone_entry/zone_exit events
+# on every noisy reading. Confirmed live: integrated.py's zone transition
+# logging had zero debounce protection until this was added.
+#
+# Zone membership is boolean (in/out), not a continuous distance like
+# beacon proximity, so the mechanism here is a read-count debounce rather
+# than BeaconLockTracker's distance-based hysteresis: a candidate zone
+# has to be seen on min_confirm_readings *consecutive* updates before the
+# lock actually changes, so a single noisy reading can never flip it.
+
+@dataclass
+class ZoneLockTracker:
+    min_confirm_readings: int = 3
+    locked_zone: Optional[str] = None
+    _candidate_zone: Optional[str] = field(default=None, repr=False)
+    _candidate_count: int = field(default=0, repr=False)
+
+    def update(self, raw_zone: Optional[str]) -> Optional[str]:
+        """
+        Feed in the raw, unsmoothed zone resolution for this update.
+        Returns the current locked zone, which may be unchanged from
+        before this call even if raw_zone just changed.
+        """
+        if raw_zone == self.locked_zone:
+            # Back in (or still in) the locked zone -- any in-progress
+            # candidate for a different zone is stale, drop it.
+            self._candidate_zone = None
+            self._candidate_count = 0
+            return self.locked_zone
+
+        if raw_zone == self._candidate_zone:
+            self._candidate_count += 1
+        else:
+            self._candidate_zone = raw_zone
+            self._candidate_count = 1
+
+        if self._candidate_count >= self.min_confirm_readings:
+            self.locked_zone = self._candidate_zone
+            self._candidate_zone = None
+            self._candidate_count = 0
+
+        return self.locked_zone
 
 
 # ---------------------------------------------------------------------------
