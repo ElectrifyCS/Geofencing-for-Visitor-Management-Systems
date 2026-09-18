@@ -42,27 +42,81 @@ class TagAssignment:
     tag_id: str
     guest_id: str
     assigned_at_s: float
+    # The physical tag carries the identity AND the privilege class.
+    # Before this, tag_type lived only as a check_in_visitor() argument,
+    # so nothing stopped the same person being re-checked-in under a
+    # higher privilege class later in the day. Binding it to the issued
+    # tag makes the privilege a property of the thing reception
+    # physically handed over, which is what it is in real life.
+    guest_name: str = ""
+    tag_type: str = "standard"  # "standard" | "escorted"
 
 
 class TagRegistry:
-    """Pairs a physical tag ID to a guest profile and back, in O(1)."""
+    """
+    Binds a physical tag to a named guest and a privilege class, both
+    ways, in O(1).
+
+    A VMS exists to register *people*, so the tag is only ever a handle
+    for one: every assignment carries the guest's name, and the reverse
+    lookup exists too, because an operator reading a dashboard alert
+    needs "A. Mwangi", not "TAG-0042".
+    """
 
     def __init__(self) -> None:
         self._by_tag: Dict[str, TagAssignment] = {}
+        self._by_guest: Dict[str, str] = {}  # guest_id -> tag_id
 
-    def assign(self, tag_id: str, guest_id: str, timestamp_s: float) -> TagAssignment:
+    def assign(
+        self, tag_id: str, guest_id: str, timestamp_s: float,
+        guest_name: str = "", tag_type: str = "standard",
+    ) -> TagAssignment:
         if tag_id in self._by_tag:
             raise ValueError(f"Tag {tag_id} is already assigned to {self._by_tag[tag_id].guest_id}")
-        assignment = TagAssignment(tag_id=tag_id, guest_id=guest_id, assigned_at_s=timestamp_s)
+        existing = self._by_guest.get(guest_id)
+        if existing is not None:
+            # One live tag per guest. Without this, a guest could be
+            # checked in a second time on a higher-privilege tag while
+            # the first is still active -- exactly the hole that binding
+            # tag_type to the tag was meant to close.
+            raise ValueError(
+                f"Guest {guest_id} already holds tag {existing}; check it in before issuing another"
+            )
+        assignment = TagAssignment(
+            tag_id=tag_id, guest_id=guest_id, assigned_at_s=timestamp_s,
+            guest_name=guest_name, tag_type=tag_type,
+        )
         self._by_tag[tag_id] = assignment
+        self._by_guest[guest_id] = tag_id
         return assignment
 
     def unassign(self, tag_id: str) -> Optional[TagAssignment]:
-        return self._by_tag.pop(tag_id, None)
+        assignment = self._by_tag.pop(tag_id, None)
+        if assignment is not None:
+            self._by_guest.pop(assignment.guest_id, None)
+        return assignment
 
     def guest_for_tag(self, tag_id: str) -> Optional[str]:
         assignment = self._by_tag.get(tag_id)
         return assignment.guest_id if assignment else None
+
+    def tag_for_guest(self, guest_id: str) -> Optional[str]:
+        return self._by_guest.get(guest_id)
+
+    def assignment_for_guest(self, guest_id: str) -> Optional[TagAssignment]:
+        tag_id = self._by_guest.get(guest_id)
+        return self._by_tag.get(tag_id) if tag_id else None
+
+    def display_name(self, guest_id: str) -> str:
+        """What an operator should see in an alert: a person, not a tag ID."""
+        a = self.assignment_for_guest(guest_id)
+        if a and a.guest_name:
+            return f"{a.guest_name} ({a.tag_id})"
+        return guest_id
+
+    def tag_type_for_guest(self, guest_id: str) -> Optional[str]:
+        a = self.assignment_for_guest(guest_id)
+        return a.tag_type if a else None
 
 
 # ---------------------------------------------------------------------------

@@ -201,9 +201,19 @@ class IntegratedVisitorManagement:
     # Tag Lifecycle Management
     # =========================================================================
 
-    def assign_tag(self, tag_id: str, visitor_id: str, timestamp_s: float) -> None:
-        """Assign a physical tag to a visitor at check-in."""
-        self.tag_registry.assign(tag_id, visitor_id, timestamp_s)
+    def assign_tag(
+        self, tag_id: str, visitor_id: str, timestamp_s: float,
+        guest_name: str = "", tag_type: str = "standard",
+    ) -> None:
+        """
+        Issue a physical tag to a visitor at check-in, binding the
+        guest's name and the tag's privilege class to the tag itself.
+        Raises if the tag is already out, or if this guest already holds
+        a live tag.
+        """
+        self.tag_registry.assign(
+            tag_id, visitor_id, timestamp_s, guest_name=guest_name, tag_type=tag_type
+        )
 
     def unassign_tag(self, tag_id: str) -> None:
         """Release a tag at check-out."""
@@ -361,6 +371,22 @@ class IntegratedVisitorManagement:
         granted: List[Dict] = []
         refused: List[Dict] = []
         valid_until = now + timedelta(hours=duration_hours)
+
+        # Privilege comes from the tag physically issued to this guest,
+        # not from whatever the caller passed in. If a tag is on record,
+        # it wins outright -- an "escorted" argument cannot upgrade a
+        # standard tag that reception actually handed over. The argument
+        # is only a fallback for callers that provision no tag at all.
+        issued = self.tag_registry.assignment_for_guest(visitor_id)
+        if issued is not None:
+            if issued.tag_type != tag_type:
+                self.event_log.log(
+                    now.timestamp(), "permit_denied", visitor_id,
+                    f"Requested '{tag_type}' privileges but issued tag {issued.tag_id} "
+                    f"is '{issued.tag_type}' -- using the tag's own class",
+                    source_module="permits",
+                )
+            tag_type = issued.tag_type
 
         if host_id:
             self.escort_assignments[visitor_id] = host_id
