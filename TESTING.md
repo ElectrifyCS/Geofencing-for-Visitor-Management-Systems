@@ -128,6 +128,58 @@ on-site results come in.
 
 ---
 
+## Tag access control — dynamic, role-based zone rights
+
+Round-2 field testing identified the gap this closes: `Visitor.allowed_areas`
+was a static list, so a guest who stated "IT department" at reception, or was
+handed an escorted tag for a server room, was still evaluated against whatever
+that list happened to contain. The system could raise alerts about
+unauthorized presence, but it could never *proactively authorize* anything.
+
+`permits.py` had the right building block (time-windowed `Permit` objects with
+a `requires_escort` flag) but was never wired into the live path — confirmed by
+inspection: zero references to it in `integrated.py`. This meant the
+`permit_denied` event type already defined in `event_log.py` could never
+actually fire.
+
+**What was built:**
+
+- `IntegratedVisitorManagement.check_in_visitor()` — turns a stated destination
+  list plus a tag type into real, time-windowed permits. Two tag types:
+  `"standard"` (public and escort-required destinations; can never be granted a
+  `prohibited` zone) and `"escorted"` (can reach `prohibited` zones, but every
+  non-public permit it issues carries `requires_escort=True`). Refusals come
+  back with a reason, and are logged, because reception needs to see *why*.
+- `is_escort_present()` — escort presence is **verified against live proximity**,
+  not assumed from the check-in assignment. An escorted tag whose host wandered
+  off is no longer an escorted visit, which is precisely the case a static
+  `allowed_areas` list could never catch.
+- Authorization evaluated in `update_visitor_position()` on **confirmed zone
+  entry** (via `ZoneLockTracker`), not on every position sample — a guest
+  standing in a server room for ten minutes is one authorization decision, not
+  600 identical denials flooding the dashboard.
+- `permit_granted` / `permit_authorized` / `permit_denied` all flow through the
+  existing `EventLog`, so the real-time `subscribe()` path delivers them with no
+  transport changes.
+
+**Verified end-to-end:**
+
+| Scenario | Result |
+|---|---|
+| Standard tag states `it_dept` (escort-required), no host assigned | Refused at check-in, with reason |
+| Standard tag states `server_room` (prohibited) | Refused — prohibited needs an escorted tag |
+| Escorted tag with host, same two destinations | Both granted, `requires_escort=True` |
+| Escorted guest in server room, host 1m away | `permit_authorized` |
+| Escorted guest in server room, host 45m away | `permit_denied` — CRITICAL: right revoked live when the escort left |
+| Standard guest wanders into server room with no permit | `permit_denied` — CRITICAL, fires once on confirmed entry |
+
+**Still open:** tag types are a `check_in_visitor()` parameter rather than a
+field on `Visitor`/the physical tag record, so nothing yet prevents re-checking
+someone in under a different tag type. Binding tag type to the provisioned tag
+in `TagRegistry` is the natural next step.
+
+---
+
 ## Event logging for the admin dashboard
 
 Every module above (`tracking`, `tag_lifecycle`, `incident`,

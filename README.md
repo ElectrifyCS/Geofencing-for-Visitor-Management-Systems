@@ -141,7 +141,12 @@ time-windowed authorization.
   which says *which* zones but never *when*. Deliberately built as one
   general model — works for any `zone_id`, whether that's a
   `ZoneProfile.zone_name` or an elevator `FloorBeacon.floor_id` — rather
-  than a zone-flavoured version and a separate floor-flavoured one.
+  than a zone-flavoured version and a separate floor-flavoured one. Now
+  wired into the live path: `check_in_visitor()` turns a guest's stated
+  destination plus tag type (standard vs escorted) into real
+  time-windowed permits, and escort presence is verified against live
+  proximity rather than assumed, so an escorted tag's rights lapse the
+  moment the host walks away.
 
 Math foundation ties to IB AA HL: complex numbers (blueprint calibration),
 vectors (distance/containment/directional checks), sequences and series
@@ -239,6 +244,22 @@ directly and found to already work correctly, is in
 This section gets updated as on-site results come in, not claimed
 ahead of them.
 
+### Live event dashboard
+
+`live_event_dashboard.html` replays a real event stream captured from an
+actual run of `geofencing/integrated.py` — two visitors (one standard
+tag, one escorted) moving through three zones at increasing risk levels,
+producing 24 genuine events across all four severity levels. Play it in
+real time, jump to the end, or filter by minimum severity the way an
+admin would.
+
+Unlike the scenario walkthrough below, none of its contents are written
+by hand: the numbers, messages and severities are exactly what the
+pipeline emitted. It is still a static replay — it does not call into
+Python live — but it renders precisely the shape `Event.to_dict()`
+produces, so wiring it to a real `EventLog.subscribe()` feed is a
+transport change, not a rewrite.
+
 ### Live dashboard simulation
 
 `live_dashboard_simulation.html` is a self-contained, dependency-free
@@ -286,6 +307,7 @@ Geofencing-for-Visitor-Management-Systems/
 │   └── permits.py           # time-windowed zone/floor authorization
 ├── demo.py                  # self-contained demo (produces the two images above)
 ├── Geofencing.py             # thin backwards-compatible entry point
+├── live_event_dashboard.html       # replays a real captured event stream, severity-filterable
 ├── live_dashboard_simulation.html  # static walkthrough of the v2 scenario end to end
 ├── assets/                  # demo output images
 ├── requirements.txt
