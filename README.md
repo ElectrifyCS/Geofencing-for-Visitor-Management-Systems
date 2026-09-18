@@ -70,7 +70,20 @@ Only observations that the system itself judged TRUSTED/LOW are allowed to shrin
 Point-in-polygon by ray casting (even-odd rule).
 Directed graph of allowed zone-to-zone movements with optional maximum transit times.
 
-For reference, this maps onto IB Mathematics AA HL as follows: logarithmic functions and transformations (the convergence factor), sequences and limits (\(c(n)\) as \(n\to\infty\)), vectors and vector geometry (position/displacement/geofence/polygon checks), statistics — mean, variance, median, MAD (Kalman noise model and robust profiles), and functions and transformations (\(\tau(c,\sigma)\)).
+**Why the approach is mathematical in the first place:** I studied IB
+Mathematics Analysis and Approaches at Higher Level, and that training is
+the foundation this whole system is built on rather than a label applied
+to it afterwards. Reaching for a Kalman filter instead of a moving
+average, a logarithmic convergence factor instead of a fixed warm-up
+count, median/MAD instead of mean/standard deviation, and the dot product
+to answer "is this person walking *at* that door" — those are AA HL tools,
+chosen because the syllabus makes clear what each one actually buys you.
+The specific topics in play here: logarithmic functions and
+transformations (the convergence factor), sequences and limits (\(c(n)\)
+as \(n\to\infty\)), vectors and vector geometry
+(position/displacement/geofence/polygon checks), statistics — mean,
+variance, median, MAD (Kalman noise model and robust profiles), and
+functions and transformations (\(\tau(c,\sigma)\)).
 
 ---
 
@@ -146,9 +159,13 @@ time-windowed authorization.
   destination plus tag type (standard vs escorted) into real
   time-windowed permits, and escort presence is verified against live
   proximity rather than assumed, so an escorted tag's rights lapse the
-  moment the host walks away.
+  moment the host walks away. Privilege is bound to the physical tag in
+  `TagRegistry` (which also carries the guest's name, so operators read
+  "A. Mwangi", not "TAG-0042"), not passed as an argument — a standard
+  tag cannot be upgraded by re-checking in, and a guest cannot hold two
+  live tags at once.
 
-Math foundation ties to IB AA HL: complex numbers (blueprint calibration),
+The same AA HL foundation carries through the v2 modules: complex numbers (blueprint calibration),
 vectors (distance/containment/directional checks), sequences and series
 (shoelace formula), statistics (z-score anomaly thresholds, variance),
 systems of linear equations (multilateration), and calculus (double
@@ -244,21 +261,33 @@ directly and found to already work correctly, is in
 This section gets updated as on-site results come in, not claimed
 ahead of them.
 
-### Live event dashboard
+### Live operations dashboard
 
-`live_event_dashboard.html` replays a real event stream captured from an
-actual run of `geofencing/integrated.py` — two visitors (one standard
-tag, one escorted) moving through three zones at increasing risk levels,
-producing 24 genuine events across all four severity levels. Play it in
-real time, jump to the end, or filter by minimum severity the way an
-admin would.
+`live_event_dashboard.html` is an end-to-end replay of a real run of
+`geofencing/integrated.py` — two visitors (one standard tag, one
+escorted) plus a staff escort moving through three zones of increasing
+risk, producing 33 genuine events across all four severity levels. It
+shows how the system actually runs, not a mock-up:
 
-Unlike the scenario walkthrough below, none of its contents are written
-by hand: the numbers, messages and severities are exactly what the
-pipeline emitted. It is still a static replay — it does not call into
-Python live — but it renders precisely the shape `Event.to_dict()`
-produces, so wiring it to a real `EventLog.subscribe()` feed is a
-transport change, not a rewrite.
+- **Live map** — zones shaded by `risk_level`, units drawn at their real
+  tracked positions, labelled with guest names resolved through
+  `TagRegistry`.
+- **Route history playback** — scrub or play the whole visit back;
+  movement trails accumulate behind each unit, which is the view you'd
+  want for an incident review or audit.
+- **Breach alerts** — the most recent CRITICAL event surfaces as a
+  standing banner, with live counters for denied entries and breaches.
+- **Boundary creation tools** — draw circular, rectangular or custom
+  polygon boundaries over the map for planning. These are local scratch
+  geometry only; they are not written back to any `ZoneProfile`.
+- **Severity filtering** — the same `min_severity` filter `EventLog.query()`
+  supports, so you can drop to Alert+ or Critical-only.
+
+None of its contents are hand-written: the positions, messages and
+severities are exactly what the pipeline emitted. It is still a static
+replay — it does not call into Python live — but it renders precisely
+the shape `Event.to_dict()` produces, so wiring it to a real
+`EventLog.subscribe()` feed is a transport change, not a rewrite.
 
 ### Live dashboard simulation
 
@@ -307,7 +336,7 @@ Geofencing-for-Visitor-Management-Systems/
 │   └── permits.py           # time-windowed zone/floor authorization
 ├── demo.py                  # self-contained demo (produces the two images above)
 ├── Geofencing.py             # thin backwards-compatible entry point
-├── live_event_dashboard.html       # replays a real captured event stream, severity-filterable
+├── live_event_dashboard.html       # live map, playback, breach alerts, boundary drawing tools
 ├── live_dashboard_simulation.html  # static walkthrough of the v2 scenario end to end
 ├── assets/                  # demo output images
 ├── requirements.txt

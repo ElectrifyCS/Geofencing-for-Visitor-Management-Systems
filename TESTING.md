@@ -173,10 +173,18 @@ actually fire.
 | Escorted guest in server room, host 45m away | `permit_denied` — CRITICAL: right revoked live when the escort left |
 | Standard guest wanders into server room with no permit | `permit_denied` — CRITICAL, fires once on confirmed entry |
 
-**Still open:** tag types are a `check_in_visitor()` parameter rather than a
-field on `Visitor`/the physical tag record, so nothing yet prevents re-checking
-someone in under a different tag type. Binding tag type to the provisioned tag
-in `TagRegistry` is the natural next step.
+**Closed since:** tag type is now bound to the physical tag in `TagRegistry`,
+alongside the guest's name, rather than passed as a `check_in_visitor()`
+argument. `check_in_visitor()` reads the privilege class off the tag actually
+issued and ignores any conflicting argument (logging the mismatch), and a guest
+cannot hold two live tags at once. Verified against the escalation path
+directly: a guest issued a standard tag who re-checks in requesting `escorted`
+privileges for a prohibited zone is still refused, and a second tag issued to
+the same guest while the first is live raises rather than silently succeeding.
+
+A VMS registers people, not tags, so `TagRegistry` also resolves the other
+direction — `display_name()` gives operators "A. Mwangi (TAG-0042)" instead of
+a bare tag ID, which is what now appears in dashboard event rows.
 
 ---
 
