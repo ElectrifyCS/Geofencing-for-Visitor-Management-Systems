@@ -17,7 +17,7 @@ from geofencing import (
 os.makedirs("assets", exist_ok=True)
 
 # ------------------------------------------------------------------
-# Facility: simplified CBK-style layout
+# Facility: simplified layout
 # ------------------------------------------------------------------
 lobby = ZoneProfile(
     zone_name="main_lobby",

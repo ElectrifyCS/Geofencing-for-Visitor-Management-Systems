@@ -79,7 +79,7 @@ class BadgeSystem:
     ) -> BadgeGPSCorrelation:
         """
         Distance-based correlation.
-        Thresholds are configurable so each facility (CBK, Parklands, …)
+        Thresholds are configurable so each facility
         can tune them to its GPS environment.
         """
         if badge_event.gps_position is None:
