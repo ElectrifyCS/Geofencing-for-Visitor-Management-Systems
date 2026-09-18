@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VMS — Live Event Dashboard</title><style>
+:root{--bg:#f4f3ef;--s1:#fff;--bd:#ddd;--tx:#1c1c1a;--t2:#5f5e5a;--t3:#8b8a84;
+--info:#8b8a84;--warn:#ba7517;--alert:#d1600f;--crit:#e24b4a;
+--infoB:#f0efe9;--warnB:#faeeda;--alertB:#fae4d5;--critB:#fcebeb}
+@media(prefers-color-scheme:dark){:root{--bg:#1c1c1a;--s1:#262623;--bd:#3a3a37;--tx:#f0efe9;--t2:#b4b2a9;--t3:#888780;
+--infoB:#2c2c2a;--warnB:#412402;--alertB:#4a2a0c;--critB:#501313}}
+*{box-sizing:border-box}body{margin:0;padding:2rem 1rem 4rem;background:var(--bg);color:var(--tx);
+font-family:-apple-system,"Segoe UI",Roboto,sans-serif}.w{max-width:860px;margin:0 auto}
+h1{font-size:21px;margin:0 0 4px}.cap{font-size:14px;color:var(--t2);margin:0 0 20px}
+button{font:inherit;font-size:14px;padding:9px 15px;border-radius:8px;border:.5px solid var(--bd);
+background:var(--s1);color:var(--tx);cursor:pointer}button:hover{background:var(--bg)}button:disabled{opacity:.45;cursor:default}
+button.on{border-color:var(--crit);border-width:1.5px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.st{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
+.c{background:var(--s1);border:.5px solid var(--bd);border-radius:8px;padding:.85rem}
+.c p{margin:0}.cl{font-size:12px;color:var(--t2);margin-bottom:3px!important}.cv{font-size:22px;font-weight:600}
+.f{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
+.f span{font-size:12px;color:var(--t2);margin-right:4px}
+#log{display:flex;flex-direction:column;gap:5px;max-height:440px;overflow-y:auto}
+.e{padding:9px 11px;border-left:3px solid var(--bd);font-size:13px;display:flex;gap:10px;align-items:baseline}
+.e.info{border-color:var(--info);background:var(--infoB)}.e.warning{border-color:var(--warn);background:var(--warnB)}
+.e.alert{border-color:var(--alert);background:var(--alertB)}.e.critical{border-color:var(--crit);background:var(--critB)}
+.tm{color:var(--t3);font-variant-numeric:tabular-nums;font-size:12px;flex-shrink:0}
+.ty{font-weight:600;flex-shrink:0;font-size:12px}.ms{color:var(--t2)}
+footer{margin-top:26px;font-size:12px;color:var(--t3);line-height:1.5}
+</style></head><body><div class="w">
+<h1>VMS — live event dashboard</h1>
+<p class="cap">Replay of a real event stream produced by running <code>geofencing/integrated.py</code>: two visitors (one standard tag, one escorted), three zones at increasing risk levels. Every event below is genuine output from the pipeline, not scripted.</p>
+<div class="st">
+<div class="c"><p class="cl">Events</p><p class="cv" id="n">0</p></div>
+<div class="c"><p class="cl">Critical</p><p class="cv" id="nc" style="color:var(--crit)">0</p></div>
+<div class="c"><p class="cl">Denied entries</p><p class="cv" id="nd">0</p></div>
+<div class="c"><p class="cl">Clock</p><p class="cv" id="ck">0s</p></div>
+</div>
+<div class="row"><button id="go" onclick="play()">Play in real time</button>
+<button onclick="all()">Show all</button><button onclick="rst()">Reset</button></div>
+<div class="f"><span>Min severity:</span>
+<button class="sv on" data-s="info" onclick="sev('info',this)">All</button>
+<button class="sv" data-s="warning" onclick="sev('warning',this)">Warning+</button>
+<button class="sv" data-s="alert" onclick="sev('alert',this)">Alert+</button>
+<button class="sv" data-s="critical" onclick="sev('critical',this)">Critical</button></div>
+<div id="log"></div>
+<footer>Static replay of a recorded run &mdash; it does not call into the Python code live.
+In a real deployment the same stream arrives through <code>EventLog.subscribe()</code>, which pushes
+each event synchronously the moment it is logged; this page renders exactly the shape
+<code>Event.to_dict()</code> emits, so the transport layer is the only missing piece.</footer>
+</div><script>
+const EV=[{"t":0,"ty":"permit_granted","en":"V-001","sv":"info","m":"Permit issued for lobby until 17:00","z":"lobby"},{"t":0,"ty":"permit_denied","en":"V-001","sv":"alert","m":"Check-in refused for it_dept: escort-required zone with no host assigned","z":"it_dept"},{"t":0,"ty":"permit_denied","en":"V-001","sv":"critical","m":"Check-in refused for server_room: prohibited zone needs an escorted tag","z":"server_room"},{"t":0,"ty":"permit_granted","en":"V-002","sv":"info","m":"Permit issued for lobby until 17:00","z":"lobby"},{"t":0,"ty":"permit_granted","en":"V-002","sv":"info","m":"Permit issued for it_dept until 17:00 (escort required)","z":"it_dept"},{"t":0,"ty":"permit_granted","en":"V-002","sv":"warning","m":"Permit issued for server_room until 17:00 (escort required)","z":"server_room"},{"t":90,"ty":"zone_entry","en":"V-001","sv":"info","m":"Entered lobby","z":"lobby"},{"t":90,"ty":"permit_authorized","en":"V-001","sv":"info","m":"Authorized (2026-09-18 09:00:00 - 2026-09-18 17:00:00)","z":"lobby"},{"t":90,"ty":"zone_entry","en":"V-002","sv":"info","m":"Entered lobby","z":"lobby"},{"t":90,"ty":"permit_authorized","en":"V-002","sv":"info","m":"Authorized (2026-09-18 09:00:00 - 2026-09-18 17:00:00)","z":"lobby"},{"t":230,"ty":"zone_exit","en":"V-002","sv":"info","m":"Left lobby","z":"lobby"},{"t":230,"ty":"zone_entry","en":"V-002","sv":"info","m":"Entered it_dept","z":"it_dept"},{"t":230,"ty":"permit_authorized","en":"V-002","sv":"info","m":"Authorized (2026-09-18 09:00:00 - 2026-09-18 17:00:00)","z":"it_dept"},{"t":430,"ty":"zone_exit","en":"V-001","sv":"info","m":"Left lobby","z":"lobby"},{"t":430,"ty":"zone_entry","en":"V-001","sv":"info","m":"Entered it_dept","z":"it_dept"},{"t":430,"ty":"permit_denied","en":"V-001","sv":"alert","m":"No permit exists for V-001 on it_dept","z":"it_dept"},{"t":630,"ty":"zone_exit","en":"V-002","sv":"info","m":"Left it_dept","z":"it_dept"},{"t":630,"ty":"zone_entry","en":"V-002","sv":"warning","m":"Entered server_room","z":"server_room"},{"t":630,"ty":"permit_authorized","en":"V-002","sv":"warning","m":"Authorized (2026-09-18 09:00:00 - 2026-09-18 17:00:00)","z":"server_room"},{"t":1300,"ty":"alert_suppressed_warmup","en":"V-002","sv":"warning","m":"Tether breach suppressed (reliability warm-up): TETHER BREACH: V-002 is 45.0m from HOST-1 (limit 6.1m)","z":"server_room"},{"t":1300,"ty":"alert_suppressed_warmup","en":"V-002","sv":"warning","m":"Dwell anomaly suppressed (reliability warm-up): DWELL ANOMALY: V-002 in server_room for 700s (baseline 45s)","z":"server_room"},{"t":1315,"ty":"alert_suppressed_warmup","en":"V-002","sv":"warning","m":"Tether breach suppressed (reliability warm-up): TETHER BREACH: V-002 is 45.0m from HOST-1 (limit 6.1m)","z":"server_room"},{"t":1330,"ty":"alert_suppressed_warmup","en":"V-002","sv":"warning","m":"Tether breach suppressed (reliability warm-up): TETHER BREACH: V-002 is 45.0m from HOST-1 (limit 6.1m)","z":"server_room"},{"t":1345,"ty":"tether_breach","en":"V-002","sv":"critical","m":"TETHER BREACH: V-002 is 45.0m from HOST-1 (limit 6.1m)","z":"server_room"}]
+;
+const ORD={info:0,warning:1,alert:2,critical:3};
+let shown=0,minS='info',timer=null;
+function render(){const l=document.getElementById('log');l.innerHTML='';
+let nc=0,nd=0;const vis=EV.slice(0,shown);
+vis.forEach(e=>{if(e.sv==='critical')nc++;if(e.ty==='permit_denied')nd++;});
+vis.filter(e=>ORD[e.sv]>=ORD[minS]).slice().reverse().forEach(e=>{
+const d=document.createElement('div');d.className='e '+e.sv;
+d.innerHTML='<span class="tm">'+e.t+'s</span><span class="ty">'+e.ty+'</span><span class="ms">'+e.m+'</span>';
+l.appendChild(d);});
+document.getElementById('n').textContent=shown;
+document.getElementById('nc').textContent=nc;
+document.getElementById('nd').textContent=nd;
+document.getElementById('ck').textContent=(vis.length?vis[vis.length-1].t:0)+'s';}
+function play(){if(timer)return;document.getElementById('go').disabled=true;
+timer=setInterval(()=>{if(shown>=EV.length){clearInterval(timer);timer=null;
+document.getElementById('go').disabled=false;return;}shown++;render();},420);}
+function all(){if(timer){clearInterval(timer);timer=null;document.getElementById('go').disabled=false;}
+shown=EV.length;render();}
+function rst(){if(timer){clearInterval(timer);timer=null;}document.getElementById('go').disabled=false;shown=0;render();}
+function sev(s,b){minS=s;document.querySelectorAll('.sv').forEach(x=>x.classList.remove('on'));
+b.classList.add('on');render();}
+render();
+</script></body></html>
