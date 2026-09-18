@@ -1,74 +1,154 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>VMS — Live Event Dashboard</title><style>
+<title>VMS — Live Operations Dashboard</title><style>
 :root{--bg:#f4f3ef;--s1:#fff;--bd:#ddd;--tx:#1c1c1a;--t2:#5f5e5a;--t3:#8b8a84;
---info:#8b8a84;--warn:#ba7517;--alert:#d1600f;--crit:#e24b4a;
---infoB:#f0efe9;--warnB:#faeeda;--alertB:#fae4d5;--critB:#fcebeb}
+--ok:#639922;--warn:#ba7517;--alert:#d1600f;--crit:#e24b4a;--blue:#378add;--purple:#7f77dd;
+--okB:#eaf3de;--warnB:#faeeda;--alertB:#fae4d5;--critB:#fcebeb;--infoB:#f0efe9}
 @media(prefers-color-scheme:dark){:root{--bg:#1c1c1a;--s1:#262623;--bd:#3a3a37;--tx:#f0efe9;--t2:#b4b2a9;--t3:#888780;
---infoB:#2c2c2a;--warnB:#412402;--alertB:#4a2a0c;--critB:#501313}}
-*{box-sizing:border-box}body{margin:0;padding:2rem 1rem 4rem;background:var(--bg);color:var(--tx);
-font-family:-apple-system,"Segoe UI",Roboto,sans-serif}.w{max-width:860px;margin:0 auto}
-h1{font-size:21px;margin:0 0 4px}.cap{font-size:14px;color:var(--t2);margin:0 0 20px}
-button{font:inherit;font-size:14px;padding:9px 15px;border-radius:8px;border:.5px solid var(--bd);
-background:var(--s1);color:var(--tx);cursor:pointer}button:hover{background:var(--bg)}button:disabled{opacity:.45;cursor:default}
-button.on{border-color:var(--crit);border-width:1.5px}
-.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
-.st{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
-.c{background:var(--s1);border:.5px solid var(--bd);border-radius:8px;padding:.85rem}
-.c p{margin:0}.cl{font-size:12px;color:var(--t2);margin-bottom:3px!important}.cv{font-size:22px;font-weight:600}
-.f{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
-.f span{font-size:12px;color:var(--t2);margin-right:4px}
-#log{display:flex;flex-direction:column;gap:5px;max-height:440px;overflow-y:auto}
-.e{padding:9px 11px;border-left:3px solid var(--bd);font-size:13px;display:flex;gap:10px;align-items:baseline}
-.e.info{border-color:var(--info);background:var(--infoB)}.e.warning{border-color:var(--warn);background:var(--warnB)}
+--okB:#173404;--warnB:#412402;--alertB:#4a2a0c;--critB:#501313;--infoB:#2c2c2a}}
+*{box-sizing:border-box}body{margin:0;padding:1.5rem 1rem 4rem;background:var(--bg);color:var(--tx);
+font-family:-apple-system,"Segoe UI",Roboto,sans-serif}.w{max-width:980px;margin:0 auto}
+h1{font-size:21px;margin:0 0 4px}.cap{font-size:13.5px;color:var(--t2);margin:0 0 18px;line-height:1.5}
+button{font:inherit;font-size:13px;padding:8px 13px;border-radius:7px;border:.5px solid var(--bd);
+background:var(--s1);color:var(--tx);cursor:pointer}button:hover{filter:brightness(.97)}
+button:disabled{opacity:.4;cursor:default}button.on{border-color:var(--blue);border-width:1.5px}
+.row{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.lbl{font-size:12px;color:var(--t2);margin-right:2px}
+.st{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}
+.c{background:var(--s1);border:.5px solid var(--bd);border-radius:8px;padding:.7rem .8rem}
+.c p{margin:0}.cl{font-size:11.5px;color:var(--t2);margin-bottom:2px!important}.cv{font-size:20px;font-weight:600}
+svg{background:var(--s1);border:.5px solid var(--bd);border-radius:8px;display:block;width:100%;cursor:crosshair}
+.zl{font-size:10.5px;fill:var(--t2);pointer-events:none}.nl{font-size:10px;fill:var(--tx);font-weight:600;pointer-events:none}
+input[type=range]{flex:1;min-width:180px;accent-color:var(--blue)}
+#log{display:flex;flex-direction:column;gap:4px;max-height:270px;overflow-y:auto;margin-top:6px}
+.e{padding:7px 10px;border-left:3px solid var(--bd);font-size:12.5px;display:flex;gap:9px;align-items:baseline}
+.e.info{border-color:var(--t3);background:var(--infoB)}.e.warning{border-color:var(--warn);background:var(--warnB)}
 .e.alert{border-color:var(--alert);background:var(--alertB)}.e.critical{border-color:var(--crit);background:var(--critB)}
-.tm{color:var(--t3);font-variant-numeric:tabular-nums;font-size:12px;flex-shrink:0}
-.ty{font-weight:600;flex-shrink:0;font-size:12px}.ms{color:var(--t2)}
-footer{margin-top:26px;font-size:12px;color:var(--t3);line-height:1.5}
+.tm{color:var(--t3);font-variant-numeric:tabular-nums;flex-shrink:0;font-size:11.5px}
+.who{font-weight:600;flex-shrink:0}.ms{color:var(--t2)}
+#banner{display:none;padding:10px 13px;border-radius:8px;background:var(--critB);
+border-left:3px solid var(--crit);font-size:13.5px;margin-bottom:12px;font-weight:600}
+footer{margin-top:24px;font-size:12px;color:var(--t3);line-height:1.55}
+h2{font-size:14px;margin:18px 0 8px;font-weight:600}
 </style></head><body><div class="w">
-<h1>VMS — live event dashboard</h1>
-<p class="cap">Replay of a real event stream produced by running <code>geofencing/integrated.py</code>: two visitors (one standard tag, one escorted), three zones at increasing risk levels. Every event below is genuine output from the pipeline, not scripted.</p>
+<h1>VMS — live operations dashboard</h1>
+<p class="cap">End-to-end replay of a real run of <code>geofencing/integrated.py</code>: two visitors (one standard tag, one escorted) and a staff escort moving through three zones of increasing risk. Every event, position and severity below is genuine pipeline output.</p>
+
+<div id="banner"></div>
 <div class="st">
-<div class="c"><p class="cl">Events</p><p class="cv" id="n">0</p></div>
-<div class="c"><p class="cl">Critical</p><p class="cv" id="nc" style="color:var(--crit)">0</p></div>
-<div class="c"><p class="cl">Denied entries</p><p class="cv" id="nd">0</p></div>
 <div class="c"><p class="cl">Clock</p><p class="cv" id="ck">0s</p></div>
+<div class="c"><p class="cl">Units tracked</p><p class="cv" id="nu">0</p></div>
+<div class="c"><p class="cl">Denied entries</p><p class="cv" id="nd" style="color:var(--crit)">0</p></div>
+<div class="c"><p class="cl">Breaches</p><p class="cv" id="nb" style="color:var(--alert)">0</p></div>
 </div>
-<div class="row"><button id="go" onclick="play()">Play in real time</button>
-<button onclick="all()">Show all</button><button onclick="rst()">Reset</button></div>
-<div class="f"><span>Min severity:</span>
-<button class="sv on" data-s="info" onclick="sev('info',this)">All</button>
-<button class="sv" data-s="warning" onclick="sev('warning',this)">Warning+</button>
-<button class="sv" data-s="alert" onclick="sev('alert',this)">Alert+</button>
-<button class="sv" data-s="critical" onclick="sev('critical',this)">Critical</button></div>
+
+<h2>Live map</h2>
+<svg id="map" viewBox="0 0 700 300" role="img"><title>Facility map with live unit positions</title>
+<desc>Zones shaded by risk level, with visitor and escort positions and movement trails</desc>
+<g id="zones"></g><g id="drawn"></g><g id="trails"></g><g id="units"></g></svg>
+
+<div class="row" style="margin-top:10px">
+<span class="lbl">Draw boundary:</span>
+<button class="dt on" onclick="tool('none',this)">Off</button>
+<button class="dt" onclick="tool('circle',this)">Circle</button>
+<button class="dt" onclick="tool('rect',this)">Rectangle</button>
+<button class="dt" onclick="tool('poly',this)">Polygon</button>
+<button onclick="clearDrawn()">Clear drawn</button>
+<span class="lbl" id="hint"></span>
+</div>
+
+<h2>Route history playback</h2>
+<div class="row">
+<button id="pp" onclick="toggle()">Play</button>
+<input type="range" id="sc" min="0" max="100" value="0" oninput="seek(+this.value)">
+<button onclick="reset()">Reset</button>
+<span class="lbl"><input type="checkbox" id="tr" checked onchange="draw()"> trails</span>
+</div>
+
+<h2>Event feed</h2>
+<div class="row"><span class="lbl">Min severity:</span>
+<button class="sv on" onclick="sev('info',this)">All</button>
+<button class="sv" onclick="sev('warning',this)">Warning+</button>
+<button class="sv" onclick="sev('alert',this)">Alert+</button>
+<button class="sv" onclick="sev('critical',this)">Critical</button></div>
 <div id="log"></div>
-<footer>Static replay of a recorded run &mdash; it does not call into the Python code live.
-In a real deployment the same stream arrives through <code>EventLog.subscribe()</code>, which pushes
-each event synchronously the moment it is logged; this page renders exactly the shape
-<code>Event.to_dict()</code> emits, so the transport layer is the only missing piece.</footer>
+
+<footer>Static replay of a recorded run &mdash; it does not call into Python live. Boundaries you draw are
+local scratch geometry for planning, not written back to any <code>ZoneProfile</code>. In a real deployment
+the same event stream arrives through <code>EventLog.subscribe()</code>, which pushes each event the moment
+it is logged; this page renders exactly the shape <code>Event.to_dict()</code> emits, so the transport layer
+is the only missing piece.</footer>
 </div><script>
-const EV=[{"t":0,"ty":"permit_granted","en":"V-001","sv":"info","m":"Permit issued for lobby until 17:00","z":"lobby"},{"t":0,"ty":"permit_denied","en":"V-001","sv":"alert","m":"Check-in refused for it_dept: escort-required zone with no host assigned","z":"it_dept"},{"t":0,"ty":"permit_denied","en":"V-001","sv":"critical","m":"Check-in refused for server_room: prohibited zone needs an escorted tag","z":"server_room"},{"t":0,"ty":"permit_granted","en":"V-002","sv":"info","m":"Permit issued for lobby until 17:00","z":"lobby"},{"t":0,"ty":"permit_granted","en":"V-002","sv":"info","m":"Permit issued for it_dept until 17:00 (escort required)","z":"it_dept"},{"t":0,"ty":"permit_granted","en":"V-002","sv":"warning","m":"Permit issued for server_room until 17:00 (escort required)","z":"server_room"},{"t":90,"ty":"zone_entry","en":"V-001","sv":"info","m":"Entered lobby","z":"lobby"},{"t":90,"ty":"permit_authorized","en":"V-001","sv":"info","m":"Authorized (2026-09-18 09:00:00 - 2026-09-18 17:00:00)","z":"lobby"},{"t":90,"ty":"zone_entry","en":"V-002","sv":"info","m":"Entered lobby","z":"lobby"},{"t":90,"ty":"permit_authorized","en":"V-002","sv":"info","m":"Authorized (2026-09-18 09:00:00 - 2026-09-18 17:00:00)","z":"lobby"},{"t":230,"ty":"zone_exit","en":"V-002","sv":"info","m":"Left lobby","z":"lobby"},{"t":230,"ty":"zone_entry","en":"V-002","sv":"info","m":"Entered it_dept","z":"it_dept"},{"t":230,"ty":"permit_authorized","en":"V-002","sv":"info","m":"Authorized (2026-09-18 09:00:00 - 2026-09-18 17:00:00)","z":"it_dept"},{"t":430,"ty":"zone_exit","en":"V-001","sv":"info","m":"Left lobby","z":"lobby"},{"t":430,"ty":"zone_entry","en":"V-001","sv":"info","m":"Entered it_dept","z":"it_dept"},{"t":430,"ty":"permit_denied","en":"V-001","sv":"alert","m":"No permit exists for V-001 on it_dept","z":"it_dept"},{"t":630,"ty":"zone_exit","en":"V-002","sv":"info","m":"Left it_dept","z":"it_dept"},{"t":630,"ty":"zone_entry","en":"V-002","sv":"warning","m":"Entered server_room","z":"server_room"},{"t":630,"ty":"permit_authorized","en":"V-002","sv":"warning","m":"Authorized (2026-09-18 09:00:00 - 2026-09-18 17:00:00)","z":"server_room"},{"t":1300,"ty":"alert_suppressed_warmup","en":"V-002","sv":"warning","m":"Tether breach suppressed (reliability warm-up): TETHER BREACH: V-002 is 45.0m from HOST-1 (limit 6.1m)","z":"server_room"},{"t":1300,"ty":"alert_suppressed_warmup","en":"V-002","sv":"warning","m":"Dwell anomaly suppressed (reliability warm-up): DWELL ANOMALY: V-002 in server_room for 700s (baseline 45s)","z":"server_room"},{"t":1315,"ty":"alert_suppressed_warmup","en":"V-002","sv":"warning","m":"Tether breach suppressed (reliability warm-up): TETHER BREACH: V-002 is 45.0m from HOST-1 (limit 6.1m)","z":"server_room"},{"t":1330,"ty":"alert_suppressed_warmup","en":"V-002","sv":"warning","m":"Tether breach suppressed (reliability warm-up): TETHER BREACH: V-002 is 45.0m from HOST-1 (limit 6.1m)","z":"server_room"},{"t":1345,"ty":"tether_breach","en":"V-002","sv":"critical","m":"TETHER BREACH: V-002 is 45.0m from HOST-1 (limit 6.1m)","z":"server_room"}]
+const D={"events":[{"t":0,"ty":"permit_granted","en":"V-001","nm":"A. Mwangi (TAG-0042)","sv":"info","m":"Permit issued for lobby until 17:00","z":"lobby"},{"t":0,"ty":"permit_denied","en":"V-001","nm":"A. Mwangi (TAG-0042)","sv":"alert","m":"Check-in refused for it_dept: escort-required zone with no host assigned","z":"it_dept"},{"t":0,"ty":"permit_denied","en":"V-001","nm":"A. Mwangi (TAG-0042)","sv":"critical","m":"Check-in refused for server_room: prohibited zone needs an escorted tag","z":"server_room"},{"t":0,"ty":"permit_denied","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"warning","m":"Requested 'standard' privileges but issued tag TAG-0043 is 'escorted' -- using the tag's own class","z":null},{"t":0,"ty":"permit_granted","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"info","m":"Permit issued for lobby until 17:00","z":"lobby"},{"t":0,"ty":"permit_granted","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"info","m":"Permit issued for it_dept until 17:00 (escort required)","z":"it_dept"},{"t":0,"ty":"permit_granted","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"warning","m":"Permit issued for server_room until 17:00 (escort required)","z":"server_room"},{"t":24,"ty":"zone_entry","en":"V-001","nm":"A. Mwangi (TAG-0042)","sv":"info","m":"Entered lobby","z":"lobby"},{"t":24,"ty":"permit_authorized","en":"V-001","nm":"A. Mwangi (TAG-0042)","sv":"info","m":"Authorized (2026-09-18 09:00:00 - 2026-09-18 17:00:00)","z":"lobby"},{"t":104,"ty":"zone_entry","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"info","m":"Entered lobby","z":"lobby"},{"t":104,"ty":"permit_authorized","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"info","m":"Authorized (2026-09-18 09:00:00 - 2026-09-18 17:00:00)","z":"lobby"},{"t":160,"ty":"tether_breach","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"warning","m":"TETHER BREACH: V-002 is 24.0m from HOST-1 (limit 6.1m)","z":"lobby"},{"t":172,"ty":"tether_breach","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"warning","m":"TETHER BREACH: V-002 is 19.2m from HOST-1 (limit 6.1m)","z":"lobby"},{"t":184,"ty":"tether_breach","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"warning","m":"TETHER BREACH: V-002 is 14.4m from HOST-1 (limit 6.1m)","z":"lobby"},{"t":360,"ty":"zone_exit","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"info","m":"Left lobby","z":"lobby"},{"t":360,"ty":"zone_entry","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"info","m":"Entered it_dept","z":"it_dept"},{"t":360,"ty":"permit_denied","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"alert","m":"Permit for V-002 on it_dept requires an escort","z":"it_dept"},{"t":360,"ty":"alert_suppressed_warmup","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"warning","m":"Tether breach suppressed (reliability warm-up): TETHER BREACH: V-002 is 19.1m from HOST-1 (limit 6.1m)","z":"it_dept"},{"t":372,"ty":"alert_suppressed_warmup","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"warning","m":"Tether breach suppressed (reliability warm-up): TETHER BREACH: V-002 is 15.3m from HOST-1 (limit 6.1m)","z":"it_dept"},{"t":384,"ty":"alert_suppressed_warmup","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"warning","m":"Tether breach suppressed (reliability warm-up): TETHER BREACH: V-002 is 11.5m from HOST-1 (limit 6.1m)","z":"it_dept"},{"t":500,"ty":"zone_exit","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"info","m":"Left it_dept","z":"it_dept"},{"t":500,"ty":"zone_entry","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"warning","m":"Entered server_room","z":"server_room"},{"t":500,"ty":"permit_denied","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"critical","m":"Permit for V-002 on server_room requires an escort","z":"server_room"},{"t":500,"ty":"alert_suppressed_warmup","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"warning","m":"Tether breach suppressed (reliability warm-up): TETHER BREACH: V-002 is 43.0m from HOST-1 (limit 6.1m)","z":"server_room"},{"t":500,"ty":"alert_suppressed_warmup","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"warning","m":"Dwell anomaly suppressed (reliability warm-up): DWELL ANOMALY: V-002 in server_room for 100s (baseline 45s)","z":"server_room"},{"t":512,"ty":"alert_suppressed_warmup","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"warning","m":"Tether breach suppressed (reliability warm-up): TETHER BREACH: V-002 is 43.0m from HOST-1 (limit 6.1m)","z":"server_room"},{"t":524,"ty":"alert_suppressed_warmup","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"warning","m":"Tether breach suppressed (reliability warm-up): TETHER BREACH: V-002 is 43.0m from HOST-1 (limit 6.1m)","z":"server_room"},{"t":536,"ty":"tether_breach","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"critical","m":"TETHER BREACH: V-002 is 43.0m from HOST-1 (limit 6.1m)","z":"server_room"},{"t":548,"ty":"tether_breach","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"critical","m":"TETHER BREACH: V-002 is 43.0m from HOST-1 (limit 6.1m)","z":"server_room"},{"t":560,"ty":"tether_breach","en":"V-002","nm":"B. Otieno (TAG-0043)","sv":"critical","m":"TETHER BREACH: V-002 is 43.0m from HOST-1 (limit 6.1m)","z":"server_room"},{"t":620,"ty":"zone_exit","en":"V-001","nm":"A. Mwangi (TAG-0042)","sv":"info","m":"Left lobby","z":"lobby"},{"t":620,"ty":"zone_entry","en":"V-001","nm":"A. Mwangi (TAG-0042)","sv":"info","m":"Entered it_dept","z":"it_dept"},{"t":620,"ty":"permit_denied","en":"V-001","nm":"A. Mwangi (TAG-0042)","sv":"alert","m":"No permit exists for V-001 on it_dept","z":"it_dept"}],"zones":[{"n":"lobby","v":[[0,0],[25,0],[25,20],[0,20]],"r":"public"},{"n":"it_dept","v":[[28,0],[45,0],[45,20],[28,20]],"r":"escort_required"},{"n":"server_room","v":[[48,0],[64,0],[64,16],[48,16]],"r":"prohibited"}],"trails":{"V-001":[{"t":0,"x":12.0,"y":10.0},{"t":12,"x":12.0,"y":10.0},{"t":24,"x":12.0,"y":10.0},{"t":36,"x":12.0,"y":10.0},{"t":48,"x":12.0,"y":10.0},{"t":60,"x":12.0,"y":10.0},{"t":260,"x":12.0,"y":10.0},{"t":272,"x":16.8,"y":10.0},{"t":284,"x":21.6,"y":10.0},{"t":296,"x":26.4,"y":10.0},{"t":308,"x":31.2,"y":10.0},{"t":320,"x":36.0,"y":10.0},{"t":620,"x":36.0,"y":10.0},{"t":632,"x":39.8,"y":9.6},{"t":644,"x":43.6,"y":9.2},{"t":656,"x":47.4,"y":8.8},{"t":668,"x":51.2,"y":8.4},{"t":680,"x":55.0,"y":8.0}],"V-002":[{"t":80,"x":12.0,"y":10.0},{"t":92,"x":12.0,"y":10.0},{"t":104,"x":12.0,"y":10.0},{"t":116,"x":12.0,"y":10.0},{"t":128,"x":12.0,"y":10.0},{"t":140,"x":12.0,"y":10.0},{"t":160,"x":12.0,"y":10.0},{"t":172,"x":16.8,"y":10.0},{"t":184,"x":21.6,"y":10.0},{"t":196,"x":26.4,"y":10.0},{"t":208,"x":31.2,"y":10.0},{"t":220,"x":36.0,"y":10.0},{"t":360,"x":36.0,"y":10.0},{"t":372,"x":39.8,"y":9.6},{"t":384,"x":43.6,"y":9.2},{"t":396,"x":47.4,"y":8.8},{"t":408,"x":51.2,"y":8.4},{"t":420,"x":55.0,"y":8.0},{"t":500,"x":55.0,"y":8.0},{"t":512,"x":55.0,"y":8.0},{"t":524,"x":55.0,"y":8.0},{"t":536,"x":55.0,"y":8.0},{"t":548,"x":55.0,"y":8.0},{"t":560,"x":55.0,"y":8.0}],"HOST-1":[{"t":0,"x":12,"y":10},{"t":12,"x":12,"y":10},{"t":24,"x":12,"y":10},{"t":36,"x":12,"y":10},{"t":48,"x":12,"y":10},{"t":60,"x":12,"y":10},{"t":80,"x":12,"y":10},{"t":92,"x":12,"y":10},{"t":104,"x":12,"y":10},{"t":116,"x":12,"y":10},{"t":128,"x":12,"y":10},{"t":140,"x":12,"y":10},{"t":160,"x":36,"y":10},{"t":172,"x":36,"y":10},{"t":184,"x":36,"y":10},{"t":196,"x":36,"y":10},{"t":208,"x":36,"y":10},{"t":220,"x":36,"y":10},{"t":360,"x":55,"y":8},{"t":372,"x":55,"y":8},{"t":384,"x":55,"y":8},{"t":396,"x":55,"y":8},{"t":408,"x":55,"y":8},{"t":420,"x":55,"y":8},{"t":500,"x":12,"y":10},{"t":512,"x":12,"y":10},{"t":524,"x":12,"y":10},{"t":536,"x":12,"y":10},{"t":548,"x":12,"y":10},{"t":560,"x":12,"y":10}]}}
 ;
 const ORD={info:0,warning:1,alert:2,critical:3};
-let shown=0,minS='info',timer=null;
-function render(){const l=document.getElementById('log');l.innerHTML='';
-let nc=0,nd=0;const vis=EV.slice(0,shown);
-vis.forEach(e=>{if(e.sv==='critical')nc++;if(e.ty==='permit_denied')nd++;});
-vis.filter(e=>ORD[e.sv]>=ORD[minS]).slice().reverse().forEach(e=>{
-const d=document.createElement('div');d.className='e '+e.sv;
-d.innerHTML='<span class="tm">'+e.t+'s</span><span class="ty">'+e.ty+'</span><span class="ms">'+e.m+'</span>';
-l.appendChild(d);});
-document.getElementById('n').textContent=shown;
-document.getElementById('nc').textContent=nc;
-document.getElementById('nd').textContent=nd;
-document.getElementById('ck').textContent=(vis.length?vis[vis.length-1].t:0)+'s';}
-function play(){if(timer)return;document.getElementById('go').disabled=true;
-timer=setInterval(()=>{if(shown>=EV.length){clearInterval(timer);timer=null;
-document.getElementById('go').disabled=false;return;}shown++;render();},420);}
-function all(){if(timer){clearInterval(timer);timer=null;document.getElementById('go').disabled=false;}
-shown=EV.length;render();}
-function rst(){if(timer){clearInterval(timer);timer=null;}document.getElementById('go').disabled=false;shown=0;render();}
-function sev(s,b){minS=s;document.querySelectorAll('.sv').forEach(x=>x.classList.remove('on'));
-b.classList.add('on');render();}
-render();
+const RISK={public:['var(--okB)','var(--ok)'],escort_required:['var(--warnB)','var(--warn)'],prohibited:['var(--critB)','var(--crit)']};
+const COL={'V-001':'var(--blue)','V-002':'var(--purple)','HOST-1':'var(--ok)'};
+const SX=9.5,SY=9.5,OX=30,OY=40;
+const px=(x,y)=>[OX+x*SX,OY+y*SY];
+const TMAX=Math.max(...D.events.map(e=>e.t),...Object.values(D.trails).flat().map(p=>p.t));
+let now=0,minS='info',timer=null,curTool='none',drawn=[],pending=[];
+
+function zonesSVG(){document.getElementById('zones').innerHTML=D.zones.map(z=>{
+const pts=z.v.map(p=>px(p[0],p[1]).join(',')).join(' ');const[fill,stroke]=RISK[z.r];
+const c=px(z.v[0][0],z.v[0][1]);
+return `<polygon points="${pts}" fill="${fill}" stroke="${stroke}" stroke-width="1"/>`+
+`<text class="zl" x="${c[0]+6}" y="${c[1]+15}" fill="${stroke}">${z.n}</text>`;}).join('');}
+
+function draw(){
+const showTrails=document.getElementById('tr').checked;
+document.getElementById('trails').innerHTML=!showTrails?'':Object.entries(D.trails).map(([id,pts])=>{
+const seg=pts.filter(p=>p.t<=now);if(seg.length<2)return '';
+return `<polyline points="${seg.map(p=>px(p.x,p.y).join(',')).join(' ')}" fill="none" stroke="${COL[id]}" stroke-width="1.5" stroke-opacity=".45" stroke-linecap="round"/>`;}).join('');
+let live=0;
+document.getElementById('units').innerHTML=Object.entries(D.trails).map(([id,pts])=>{
+const seg=pts.filter(p=>p.t<=now);if(!seg.length)return '';live++;
+const p=seg[seg.length-1],[cx,cy]=px(p.x,p.y);
+const nm=(D.events.find(e=>e.en===id)||{}).nm||id;
+return `<circle cx="${cx}" cy="${cy}" r="7" fill="${COL[id]}" stroke="var(--s1)" stroke-width="1.5"/>`+
+`<text class="nl" x="${cx+11}" y="${cy+4}">${nm.split(' (')[0]}</text>`;}).join('');
+const seen=D.events.filter(e=>e.t<=now);
+document.getElementById('ck').textContent=now+'s';
+document.getElementById('nu').textContent=live;
+document.getElementById('nd').textContent=seen.filter(e=>e.ty==='permit_denied').length;
+document.getElementById('nb').textContent=seen.filter(e=>e.ty==='tether_breach'||e.ty==='dwell_anomaly').length;
+document.getElementById('sc').value=Math.round(now/TMAX*100);
+const l=document.getElementById('log');
+l.innerHTML=seen.filter(e=>ORD[e.sv]>=ORD[minS]).slice().reverse().map(e=>
+`<div class="e ${e.sv}"><span class="tm">${e.t}s</span><span class="who">${e.nm.split(' (')[0]}</span><span class="ms">${e.m}</span></div>`).join('');
+const crit=seen.filter(e=>e.sv==='critical');const b=document.getElementById('banner');
+if(crit.length){b.style.display='block';b.textContent='⚠ '+crit[crit.length-1].nm.split(' (')[0]+' — '+crit[crit.length-1].m;}
+else b.style.display='none';}
+
+function toggle(){const btn=document.getElementById('pp');
+if(timer){clearInterval(timer);timer=null;btn.textContent='Play';return;}
+if(now>=TMAX)now=0;btn.textContent='Pause';
+timer=setInterval(()=>{now+=6;if(now>=TMAX){now=TMAX;clearInterval(timer);timer=null;btn.textContent='Play';}draw();},110);}
+function seek(v){if(timer){clearInterval(timer);timer=null;document.getElementById('pp').textContent='Play';}
+now=Math.round(v/100*TMAX);draw();}
+function reset(){if(timer){clearInterval(timer);timer=null;document.getElementById('pp').textContent='Play';}now=0;draw();}
+function sev(s,b){minS=s;document.querySelectorAll('.sv').forEach(x=>x.classList.remove('on'));b.classList.add('on');draw();}
+
+function tool(t,b){curTool=t;pending=[];document.querySelectorAll('.dt').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+document.getElementById('hint').textContent={none:'',circle:'click centre, then edge',rect:'click two opposite corners',poly:'click points; double-click to close'}[t];}
+function clearDrawn(){drawn=[];pending=[];renderDrawn();}
+function renderDrawn(){document.getElementById('drawn').innerHTML=drawn.map(s=>{
+if(s.k==='circle')return `<circle cx="${s.cx}" cy="${s.cy}" r="${s.r}" fill="var(--blue)" fill-opacity=".1" stroke="var(--blue)" stroke-width="1.5" stroke-dasharray="4 3"/>`;
+if(s.k==='rect')return `<rect x="${s.x}" y="${s.y}" width="${s.w}" height="${s.h}" fill="var(--blue)" fill-opacity=".1" stroke="var(--blue)" stroke-width="1.5" stroke-dasharray="4 3"/>`;
+return `<polygon points="${s.pts.map(p=>p.join(',')).join(' ')}" fill="var(--blue)" fill-opacity=".1" stroke="var(--blue)" stroke-width="1.5" stroke-dasharray="4 3"/>`;}).join('')
++pending.map(p=>`<circle cx="${p[0]}" cy="${p[1]}" r="3" fill="var(--blue)"/>`).join('');}
+
+const map=document.getElementById('map');
+function mpos(ev){const r=map.getBoundingClientRect();const vb=map.viewBox.baseVal;
+return [(ev.clientX-r.left)/r.width*vb.width,(ev.clientY-r.top)/r.height*vb.height];}
+map.addEventListener('click',ev=>{if(curTool==='none')return;const p=mpos(ev);pending.push(p);
+if(curTool==='circle'&&pending.length===2){const[a,b]=pending;
+drawn.push({k:'circle',cx:a[0],cy:a[1],r:Math.hypot(b[0]-a[0],b[1]-a[1])});pending=[];}
+else if(curTool==='rect'&&pending.length===2){const[a,b]=pending;
+drawn.push({k:'rect',x:Math.min(a[0],b[0]),y:Math.min(a[1],b[1]),w:Math.abs(b[0]-a[0]),h:Math.abs(b[1]-a[1])});pending=[];}
+renderDrawn();});
+map.addEventListener('dblclick',ev=>{if(curTool!=='poly'||pending.length<3)return;
+drawn.push({k:'poly',pts:pending.slice()});pending=[];renderDrawn();});
+
+zonesSVG();draw();
 </script></body></html>
