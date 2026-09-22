@@ -188,6 +188,60 @@ a bare tag ID, which is what now appears in dashboard event rows.
 
 ---
 
+## Stairwell scenarios — CCTV-integrated compound events
+
+Four scenarios came from real geofencing work already done on a stairwell
+(emergency evacuation, vertical floor transition, security patrol
+verification, restricted access/loitering), mapped against existing code
+before building anything. Two were near-trivial reuse of what already
+existed; one is genuinely new. This section covers the restricted-access/
+loitering work, prioritized first because it feeds a real external
+consumer: the VMS integrates with the client's CCTV system, and that
+integration needs one clean signal per real event, not several independent
+ones it has to correlate itself.
+
+**Loitering, unauthorized** (`loitering_unauthorized` event type): before
+this, an unauthorized presence and a prolonged-dwell alert were two
+independent events in the same zone, with no relationship between them in
+the data. A downstream consumer reacting to "someone is loitering in a
+restricted zone" had to reassemble that from two unrelated event streams
+itself. Fixed by tracking authorization outcome per (visitor, zone) at
+confirmed entry, and checking it when a dwell anomaly fires in that same
+zone: if the entry was never authorized, one `loitering_unauthorized`
+event fires instead of a plain `dwell_anomaly` — same underlying detection,
+one compound signal. Verified both directions: an authorized person
+dwelling too long still gets the ordinary `dwell_anomaly` (loitering logic
+does not fire on legitimate presence), and only an unauthorized dweller
+triggers the compound event.
+
+**Tailgating** (`tailgating` event type): genuinely new — nothing
+previously looked at entry *timing correlation* between different tags at
+the same gateway. Detected as a second, different visitor confirming entry
+to the same zone within `tailgate_window_s` (5s default) of a prior entry,
+where at least one of the two lacks authorization. Two authorized people
+entering together is ordinary traffic and does not fire; it is specifically
+the combination of "close together in time" and "at least one shouldn't be
+here" that makes it tailgating. Verified against both cases directly,
+including a case that initially looked like a false positive during
+testing but turned out to be the escort-presence verification correctly
+refusing an "escorted" tag whose host wasn't actually tracked nearby — the
+same live-proximity check built for the tag-access work, working as
+designed, not a new bug.
+
+Both event types feed the same `EventLog`, so `EventLog.subscribe()` is
+still the only integration point a CCTV consumer needs — no separate
+transport for these two.
+
+**Still to build** (not started): vertical floor transition for stairwells
+(the gateway-crossing pattern from `elevator_tracking.py`, without the
+Kalman/accelerometer fusion, since there's no car motion to model on
+stairs — should be a lighter build than the elevator was) and security
+patrol verification (checkpoint sequence-and-timing logic; confirmed
+requirement is BLE range for general checkpoints, NFC tap as the
+high-integrity checkpoint — genuinely new, no existing pattern to reuse).
+
+---
+
 ## Event logging for the admin dashboard
 
 Every module above (`tracking`, `tag_lifecycle`, `incident`,

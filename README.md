@@ -140,6 +140,11 @@ time-windowed authorization.
   `VisitorManagementSystem`: a single `update_visitor_position()` entry
   point runs spoofing detection, tether/dwell/tag-drop checks, and zone
   resolution together for one incoming position update.
+  Two compound event types close a real gap for the CCTV integration:
+  `loitering_unauthorized` fires one signal (not two independent ones)
+  when someone dwells too long in a zone they were never authorized to
+  enter, and `tailgating` detects a second, unauthorized visitor
+  confirming entry within 5s of an authorized one at the same gateway.
 - **`elevator_tracking.py`** — 1D vertical position tracking for an
   elevator car, fusing car-mounted accelerometer readings (control input
   to a kinematic Kalman filter) with shaft-beacon floor-crossing events
