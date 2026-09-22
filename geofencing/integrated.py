@@ -59,6 +59,14 @@ class IntegratedVisitorManagement:
         # Both built and tested standalone earlier, neither previously
         # wired into the actual position-update pipeline -- fixed below.
         self.zone_lock_trackers: Dict[str, ZoneLockTracker] = {}
+        # (visitor_id, zone_id) -> was their entry authorized. Read by
+        # the loitering check to tell whether someone dwelling too long
+        # was ever supposed to be here.
+        self.zone_entry_authorized: Dict[Tuple[str, str], bool] = {}
+        # zone_id -> recent (visitor_id, timestamp_s, authorized) entries,
+        # pruned to tailgate_window_s, for tailgating detection.
+        self.recent_zone_entries: Dict[str, List[Tuple[str, float, bool]]] = {}
+        self.tailgate_window_s: float = 5.0
         self.presence_tracker = PresenceTracker(ttl_s=presence_ttl_s)
         self.reliability_warmup = ReliabilityWarmup()
         self.permit_registry = PermitRegistry()
@@ -560,6 +568,12 @@ class IntegratedVisitorManagement:
                     datetime.fromtimestamp(position.timestamp_s),
                     escort_present=escort_present,
                 )
+                # Remembered per (visitor, zone) so a later dwell anomaly
+                # in this same zone can tell whether the person who's
+                # lingering was ever authorized to be here at all -- the
+                # compound "loitering while unauthorized" check below.
+                self.zone_entry_authorized[(visitor_id, confirmed_zone)] = authorized
+
                 if not authorized:
                     alerts.append(f"UNAUTHORIZED ZONE: {reason}")
                     self.event_log.log(
@@ -571,6 +585,33 @@ class IntegratedVisitorManagement:
                         position.timestamp_s, "permit_authorized", visitor_id, reason,
                         zone_id=confirmed_zone, risk_level=zone_risk, source_module="permits",
                     )
+
+                # Tailgating: a second, different visitor confirmed
+                # entering the SAME zone within a few seconds of this
+                # one, where at least one of the two lacks authorization.
+                # Two authorized people walking in together is normal
+                # traffic, not a security event -- it's specifically the
+                # combination of "close together in time" AND "at least
+                # one shouldn't be here" that makes it tailgating rather
+                # than coincidence.
+                recent = self.recent_zone_entries.setdefault(confirmed_zone, [])
+                recent[:] = [
+                    (vid, t, auth) for vid, t, auth in recent
+                    if position.timestamp_s - t <= self.tailgate_window_s
+                ]
+                for other_vid, other_t, other_auth in recent:
+                    if other_vid == visitor_id:
+                        continue
+                    if not authorized or not other_auth:
+                        gap = position.timestamp_s - other_t
+                        self.event_log.log(
+                            position.timestamp_s, "tailgating", visitor_id,
+                            f"Entered {confirmed_zone} {gap:.1f}s after {other_vid} "
+                            f"(unauthorized: {visitor_id if not authorized else other_vid})",
+                            zone_id=confirmed_zone, risk_level=zone_risk, source_module="integrated",
+                        )
+                        break
+                recent.append((visitor_id, position.timestamp_s, authorized))
 
         # Policy checks -- suppressed while warming up, logged as
         # suppressed (not silently dropped) for audit visibility.
@@ -599,10 +640,26 @@ class IntegratedVisitorManagement:
             )
         elif dwell_alert:
             alerts.append(dwell_alert)
-            self.event_log.log(
-                position.timestamp_s, "dwell_anomaly", visitor_id, dwell_alert,
-                zone_id=zone_name, risk_level=zone_risk, source_module="tracking",
-            )
+            # Compound signal: dwelling somewhere you were never
+            # authorized to be is a materially different, more urgent
+            # event than either "denied entry" or "lingering" alone --
+            # and a CCTV integration consuming this stream shouldn't
+            # have to correlate two independent events itself to know
+            # that. Fires as ONE event, not both, specifically for this
+            # case; ordinary dwell anomalies in authorized zones are
+            # unaffected.
+            was_authorized = self.zone_entry_authorized.get((visitor_id, zone_name), True)
+            if not was_authorized:
+                self.event_log.log(
+                    position.timestamp_s, "loitering_unauthorized", visitor_id,
+                    f"Unauthorized presence AND lingering in {zone_name}: {dwell_alert}",
+                    zone_id=zone_name, risk_level=zone_risk, source_module="integrated",
+                )
+            else:
+                self.event_log.log(
+                    position.timestamp_s, "dwell_anomaly", visitor_id, dwell_alert,
+                    zone_id=zone_name, risk_level=zone_risk, source_module="tracking",
+                )
 
         tag_drop_alert = self.check_tag_drop(visitor_id, position)
         if tag_drop_alert and is_warming_up:

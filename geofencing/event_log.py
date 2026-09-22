@@ -63,6 +63,8 @@ _BASE_SEVERITY_SCORE: Dict[str, int] = {
     "permit_denied": 6,
     "permit_granted": 0,
     "permit_authorized": 0,
+    "tailgating": 7,
+    "loitering_unauthorized": 8,
     "stuck_between_floors": 7,
     "spoofing_detected": 9,
     "alert_suppressed_warmup": 2,  # informational on its own; risk_level can still push it to WARNING
