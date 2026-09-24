@@ -1,9 +1,7 @@
-__pycache__/
-*.pyc
-*.pyo
-.venv/
-venv/
-env/
-*.egg-info/
-.pytest_cache/
-.DS_Store
+﻿node_modules/
+.grok/
+.vercel/
+.tanstack/
+.project_id
+.node_modules.lock
+dist/
