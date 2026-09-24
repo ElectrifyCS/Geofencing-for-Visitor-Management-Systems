@@ -1,0 +1,114 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0c0d0b;
+  --color-surface: #141512;
+  --color-elevated: #1c1d19;
+  --color-fg: #eceae4;
+  --color-muted: #9a9890;
+  --color-subtle: #6e6c66;
+  --color-border: color-mix(in oklab, var(--color-fg) 12%, transparent);
+  --color-border-strong: color-mix(in oklab, var(--color-fg) 22%, transparent);
+  --color-accent: #d8d4cc;
+  --color-accent-fg: #0c0d0b;
+  --color-ok: #8faf6a;
+  --color-ok-dim: color-mix(in oklab, #8faf6a 18%, transparent);
+  --color-warn: #d4a05a;
+  --color-warn-dim: color-mix(in oklab, #d4a05a 16%, transparent);
+  --color-alert: #d2784a;
+  --color-alert-dim: color-mix(in oklab, #d2784a 16%, transparent);
+  --color-crit: #d4645c;
+  --color-crit-dim: color-mix(in oklab, #d4645c 16%, transparent);
+  --color-tone-a: #9bb6c9;
+  --color-tone-b: #c4a882;
+  --color-tone-c: #b7b3a8;
+  --color-tone-host: #8faf6a;
+  --color-tone-g1: #d8d4cc;
+  --color-tone-g2: #a8b0a4;
+  --color-tone-unk: #d4645c;
+  --color-zone-public: color-mix(in oklab, #8faf6a 14%, transparent);
+  --color-zone-escort: color-mix(in oklab, #d4a05a 14%, transparent);
+  --color-zone-prohibited: color-mix(in oklab, #d4645c 16%, transparent);
+  --color-zone-public-stroke: #6e8a52;
+  --color-zone-escort-stroke: #b88848;
+  --color-zone-prohibited-stroke: #b85852;
+
+  --font-sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+
+  --shadow-border: 0 0 0 1px color-mix(in oklab, var(--color-fg) 8%, transparent);
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  html,
+  body,
+  #root {
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+  p {
+    text-wrap: pretty;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes pulse-live {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-y-small, 6px));
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+.live-dot {
+  animation: pulse-live 1.6s var(--ease-in-out, ease-in-out) infinite;
+}
+
+.event-enter {
+  animation: row-in 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}

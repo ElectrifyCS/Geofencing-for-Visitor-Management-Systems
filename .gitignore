@@ -1,9 +1,32 @@
+# --- App-builder scaffold (not part of this project) ---
+.grok/
+.vercel/
+.tanstack/
+.project_id
+.node_modules.lock
+AGENTS.md
+
+# --- Node / dashboard build ---
+node_modules/
+dist/
+build/
+.cache/
+*.tsbuildinfo
+
+# --- Env / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
 __pycache__/
 *.pyc
-*.pyo
 .venv/
 venv/
-env/
-*.egg-info/
-.pytest_cache/
+
+# --- OS / editor cruft ---
 .DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
