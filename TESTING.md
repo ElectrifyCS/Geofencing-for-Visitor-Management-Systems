@@ -55,6 +55,7 @@ work.
 | Adaptive scan rate (passive when stationary) | ⚠️ | Not built, but the hook already exists: `tag_lifecycle.py`'s stationary-detection logic (built for tag-drop detection) computes exactly the signal — "this tag hasn't moved" — that adaptive scan throttling would key off. Wiring it to actual scan-rate control is real work, not started. |
 | OS background location throttling | ❌ | Deployment/app-permissions concern (see `README.md` field validation notes), not something to patch in this codebase. |
 | Device heterogeneity (high-end vs low-end) | ⚠️ | The architecture has the right hook — every `PositionSample` carries its own `sigma_m` — it just needs real per-device-class calibration data, which is a deployment task, not a code gap. |
+| Offline continuity — badge-side local logging through RF dead zones (subterranean/stairwell cores), synced on reconnect | ❌ | Client requirement, genuinely new — nothing in either codebase touches this. `ReliabilityWarmup` (`tag_lifecycle.py`) already handles noisy *readings* right after reconnection, but that's a different problem from reconstructing a path from data a badge captured *while it had no connection at all*. Needs on-device local storage (a hardware/firmware capability, not something this codebase controls) plus a batch-ingest path on this side that can accept a backdated sequence of positions instead of one live sample at a time. Not started. |
 
 ## Pillar 5 — Edge Cases & Lifecycle Scenarios
 
@@ -64,7 +65,7 @@ work.
 | "Window effect" GPS/position spikes | ✅ | `tag_lifecycle.py`'s `check_speed_anomaly` — an implausible jump gets rejected, not blindly trusted. This is the same physical-plausibility philosophy the original spoofing detector (`geofence.py`) was built around from day one. |
 | Hardware failures / graceful degradation | ✅ | Demonstrated, not just designed: `elevator_tracking.py`'s ride simulation shows the filter keeps running on pure accelerometer dead-reckoning when beacons go silent — worse accuracy, but functional, not broken. |
 | Stale/zombie tags (dropped connection while inside a zone) | ✅ | `PresenceTracker` (`incident.py`) already existed and was tested standalone, but was never actually wired into the position-update pipeline until round-2 testing caught the gap. Now called on every `update_visitor_position()`, verified end-to-end. |
-| Lag in smoothing filters causing delayed breach detection | ⚠️ | Real, inherent trade-off of any smoothing filter. Not built: a dual-path approach (smoothed position for normal tracking, a faster/less-smoothed check specifically for high-risk zones where detection speed matters more than jitter suppression). |
+| Lag in smoothing filters causing delayed breach detection | ⚠️ | Real, inherent trade-off of any smoothing filter. Now has a real field number, not just a theoretical concern: the TypeScript dashboard's `stairwell.ts` field test measured 2–4s of transition-registration lag (see "On-site field test findings — VMS Sentinel dashboard, stairwell round 1" below). Not built: a dual-path approach (smoothed position for normal tracking, a faster/less-smoothed check specifically for high-risk zones where detection speed matters more than jitter suppression). |
 | Burst noise on wake from sleep/reconnection | ✅ | Fixed with `ReliabilityWarmup` (`tag_lifecycle.py`) — same start-conservative-earn-confidence principle as `kalman.py`'s logarithmic convergence factor, reapplied as alert suppression on freshly-reconnected tags. Proven end-to-end: a real tether breach present from the very first reading is correctly suppressed for 3 readings, then fires normally — with the suppression itself logged for audit visibility, not silently dropped. |
 
 ---
@@ -188,6 +189,29 @@ a bare tag ID, which is what now appears in dashboard event rows.
 
 ---
 
+## Return-to-office auditing ("coffee badging") — not the same problem as loitering
+
+Client requirement, worth naming precisely because it's easy to assume this
+is already covered and it isn't. `DwellMonitor`'s dwell-anomaly logic (used
+for `loitering_unauthorized` above) detects staying **too long** somewhere —
+specifically somewhere unauthorized. RTO auditing needs close to the
+opposite signal: confirming someone reached their **actual assigned
+floor/zone** and stayed there for a **plausible minimum duration**, not that
+they avoided lingering somewhere they shouldn't. "Badged the lobby and left
+within a few minutes" produces no dwell-anomaly at all today, since nothing
+is being *overstayed* — that absence of a signal is itself the thing that
+needs detecting.
+
+The underlying data this would need already exists — `ZoneLockTracker`
+already produces confirmed, debounced entry/exit timestamps per zone, which
+is exactly what a "did they actually reach and stay at their destination"
+check would key off. What's missing is the analytical logic itself: a
+**minimum-dwell check at the stated destination**, evaluated on confirmed
+exit rather than confirmed entry, the mirror image of how dwell-anomaly is
+evaluated today. Not started. ❌
+
+---
+
 ## Stairwell scenarios — CCTV-integrated compound events
 
 Four scenarios came from real geofencing work already done on a stairwell
@@ -232,13 +256,88 @@ Both event types feed the same `EventLog`, so `EventLog.subscribe()` is
 still the only integration point a CCTV consumer needs — no separate
 transport for these two.
 
-**Still to build** (not started): vertical floor transition for stairwells
-(the gateway-crossing pattern from `elevator_tracking.py`, without the
-Kalman/accelerometer fusion, since there's no car motion to model on
-stairs — should be a lighter build than the elevator was) and security
-patrol verification (checkpoint sequence-and-timing logic; confirmed
-requirement is BLE range for general checkpoints, NFC tap as the
-high-integrity checkpoint — genuinely new, no existing pattern to reuse).
+**Vertical floor transition for stairwells** — built, in the TypeScript
+dashboard rather than the Python engine: `beacon.ts`/`stairwell.ts` port
+the gateway-crossing and beacon-lock pattern from `elevator_tracking.py`,
+without the Kalman/accelerometer fusion (no car motion to model on
+stairs). First field test against real hardware below — see "On-site
+field test findings — VMS Sentinel dashboard, stairwell round 1."
+
+**Still to build** (not started): security patrol verification
+(checkpoint sequence-and-timing logic; confirmed requirement is BLE range
+for general checkpoints, NFC tap as the high-integrity checkpoint —
+genuinely new, no existing pattern to reuse. `patrol.ts` exists in the
+TypeScript dashboard and passes its own simulated scenario, but has not
+yet had a field test the way stairwell tracking just did).
+
+---
+
+## On-site field test findings — VMS Sentinel dashboard (TypeScript), stairwell round 1
+
+`beacon.ts`/`stairwell.ts` — the TypeScript dashboard's port of the
+beacon-lock + hysteresis debounce pattern already proven in Python's
+`elevator_tracking.py` — had their first field test against real beacon
+hardware in a real stairwell at an active multi-story facility. Same
+pattern as the Python engine's own on-site rounds above: real RF
+propagation in an actual stairwell surfaced issues the synthetic
+simulation the dashboard normally runs against doesn't reproduce. All
+three below are open, not yet fixed — findings from today, not
+regressions from a prior fix.
+
+This is the client-stated emergency-mustering use case specifically:
+during an evacuation, stairwell floor tracking is what lets a safety team
+see who's currently in the stairwell core and which floor they actually
+exited onto, since GPS doesn't work indoors and standard 2D geofencing
+can't tell floors apart at all. That's also why the numbers below matter
+more here than they would in a lower-stakes zone — a 2–4s registration
+lag or a 10–20% jitter rate is a very different kind of problem for an
+evacuation-time system of record than it is for, say, a coffee-badging
+audit.
+
+1. **Transition registration lag: 2–4 seconds.** A user reaches the next
+   landing, or is already partway up the next flight, before the
+   smoothing filter catches up and registers the crossing. This is the
+   real-world number behind the theoretical gap already named in Pillar
+   5 ("Lag in smoothing filters causing delayed breach detection") — that
+   entry's proposed fix (a dual-path approach: keep the smoothed track for
+   normal tracking, add a faster/less-smoothed check specifically for
+   high-risk zones where detection speed matters more than jitter
+   suppression) is the same fix this needs. Not built yet.
+2. **False floor-locks (jitter): 10–20% of stationary landing readings**
+   temporarily lock onto the floor above or below, caused by signal
+   reflection through open stairwells and thin concrete slabs. This is a
+   materially worse noise environment than the elevator shaft
+   `BeaconLockTracker` was originally proven against — a shaft is a
+   comparatively contained RF environment; an open stairwell with
+   concrete landings reflects and attenuates very differently floor to
+   floor. The existing EMA-smoothing-plus-hysteresis pattern is the right
+   *shape* of fix but was tuned against shaft-like conditions, not this.
+   Not fixed yet. Worth investigating whether corroborating the locked
+   floor against a second nearby beacon (rather than trusting the nearest
+   beacon's own smoothed reading alone) makes single-beacon reflection
+   artifacts easier to reject — analogous to the outlier-rejection fix
+   already proposed for `multilateration.py` in Pillar 2, not yet tried
+   here.
+3. **Hysteresis margin, desk-tuned, fails in both directions on real
+   stairwell acoustics.** A margin tuned on a desk test (example: require
+   a sustained +5 dBm shift for 2 seconds) either triggers false floor
+   switches on normal body movement, or fails to register a genuine floor
+   change when heavy stairwell acoustics dampen the RSSI swing below the
+   fixed threshold. A single fixed absolute-dB margin doesn't generalize
+   across environments with very different signal attenuation
+   characteristics. Not fixed yet. The codebase's own established fix
+   pattern for "a fixed threshold doesn't generalize" is to make it
+   adaptive instead — the same principle behind `kalman.py`'s
+   uncertainty-scaled `τ(c,σ)` and the proposed condition-number-based
+   confidence gate for multilateration in Pillar 2 — here, that would mean
+   scaling the required margin (and/or duration) to the recently observed
+   noise floor at that specific location rather than one constant tuned
+   once on a desk. Not built yet; needs real data across more sites before
+   committing to a specific scaling function, the same reason multi-mode
+   positioning above hasn't been built yet either.
+
+This section gets updated as further on-site results for the dashboard
+come in, the same way the Python engine's rounds above do.
 
 ---
 
@@ -248,6 +347,11 @@ Every module above (`tracking`, `tag_lifecycle`, `incident`,
 `elevator_tracking`, `permits`) produces its own differently-shaped
 alert — fine in isolation, but there was no single stream an admin
 dashboard could subscribe to and expect one consistent shape.
+
+**Status: validated through simulation only, not yet field-tested against
+a live environment.** Confirmed still accurate as of the stairwell field
+round above — this round tested the TypeScript dashboard's `beacon.ts`/
+`stairwell.ts`, not `event_log.py` itself.
 
 `event_log.py` is that shared sink. `integrated.py` now logs into it at
 every point an alert is already generated (tether breach, dwell
