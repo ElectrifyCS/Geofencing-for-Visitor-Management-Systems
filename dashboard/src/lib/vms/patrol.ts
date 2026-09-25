@@ -65,8 +65,10 @@ function dist2(ax: number, ay: number, bx: number, by: number): number {
 export class PatrolVerifier {
   private run: GuardRun;
   readonly states: Map<string, CheckpointState>;
+  readonly route: PatrolRoute;
 
-  constructor(readonly route: PatrolRoute) {
+  constructor(route: PatrolRoute) {
+    this.route = route;
     this.states = new Map();
     this.run = this.freshRun();
     this.resetStates();

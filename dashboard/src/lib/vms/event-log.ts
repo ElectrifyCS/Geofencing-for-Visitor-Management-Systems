@@ -77,7 +77,11 @@ export class EventLog {
   private events: VmsEvent[] = [];
   private subscribers: Array<(event: VmsEvent) => void> = [];
 
-  constructor(public maxEvents = 800) {}
+  maxEvents: number;
+
+  constructor(maxEvents = 800) {
+    this.maxEvents = maxEvents;
+  }
 
   log(
     timestamp_s: number,

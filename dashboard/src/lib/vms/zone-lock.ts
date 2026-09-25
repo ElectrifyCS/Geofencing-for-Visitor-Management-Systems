@@ -8,7 +8,11 @@ export class ZoneLockTracker {
   private candidate: string | null = null;
   private count = 0;
 
-  constructor(public minConfirmReadings = 3) {}
+  minConfirmReadings: number;
+
+  constructor(minConfirmReadings = 3) {
+    this.minConfirmReadings = minConfirmReadings;
+  }
 
   reset(): void {
     this.lockedZone = null;

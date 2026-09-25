@@ -15,7 +15,7 @@
     "preview:restart": "node scripts/preview.mjs restart",
     "preview:stop": "node scripts/preview.mjs stop",
     "typecheck": "tsc --noEmit",
-    "test": "node --test \"scripts/**/*.test.mjs\"",
+    "test": "node --test \"scripts/**/*.test.mjs\" && node --experimental-strip-types --test \"src/lib/vms/**/*.test.ts\"",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
