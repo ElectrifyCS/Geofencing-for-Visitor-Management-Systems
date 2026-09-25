@@ -113,10 +113,15 @@ function main(argv) {
   const env = mergeAppEnv(readAppEnv(projectRoot()), process.env);
   // On Windows, node_modules/.bin entries (vite, etc.) are `.cmd` shims —
   // spawn() only resolves those through a shell, not via a bare PATH lookup.
-  const child = spawn(command, args, {
+  // In shell mode, Windows builds one command-line string by concatenating
+  // `command` and `args` — an unquoted `command` containing spaces (e.g. a
+  // full "C:\Program Files\..." path) then gets split on those spaces, so
+  // `command` must be quoted itself, not just each arg.
+  const useShell = process.platform === "win32";
+  const child = spawn(useShell ? `"${command}"` : command, args, {
     stdio: "inherit",
     env,
-    shell: process.platform === "win32",
+    shell: useShell,
   });
   // The dev server is long-running and is stopped by signalling this wrapper.
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
