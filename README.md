@@ -377,12 +377,35 @@ self-checks the moment the simulation starts — severity scoring escalates
 correctly by risk level, the beacon-lock tracker stays stable where a
 naive approach would ping-pong, a stairwell climb produces a
 floor-crossing event, and standing in BLE range of an NFC checkpoint can
-never verify it. `npm test` also runs a broader suite inherited from the
-app-builder template this was scaffolded with, covering build tooling and
-an auth system that's disabled and unused here — not the detection logic
-itself. Beyond `prove.ts`, the detection modules don't yet have a
-conventional unit-test suite; that's the natural next addition if this
-dashboard moves beyond a demo.
+never verify it. `npm test` also runs `dashboard/scripts/**/*.test.mjs`
+(build tooling) and, as of `zone-lock.ts`, real unit tests for the
+detection modules themselves under `dashboard/src/lib/vms/**/*.test.ts`
+— started with `ZoneLockTracker`'s debounce logic (locking behavior,
+boundary ping-pong resistance, an edge case in how a fresh tracker's
+first null reading is handled). `beacon.ts`, `stairwell.ts`, `patrol.ts`,
+and `event-log.ts` don't have their own unit tests yet.
+
+### Field validation status (dashboard)
+
+`beacon.ts`/`stairwell.ts` had their first field test against real beacon
+hardware in a real stairwell at an active multi-story facility — the
+client-stated emergency-mustering use case this exists for: during an
+evacuation, stairwell floor tracking is what lets a safety team see who's
+in the stairwell core and which floor they exited onto, since GPS doesn't
+work indoors. Working, but three real gaps surfaced that the synthetic
+simulation this dashboard normally runs against doesn't reproduce, none
+fixed yet: **2–4s transition-registration lag** (a user reaches the next
+landing before the smoothing filter catches up); **10–20% false
+floor-locks** on stationary landing readings from RF reflection through
+open stairwells and thin concrete slabs — a noisier environment than the
+elevator shaft this pattern was originally proven against; and a
+**desk-tuned hysteresis margin that fails in both directions** on real
+stairwell acoustics (false switches on body movement, or missed real
+transitions when attenuation is heavier than the desk test assumed).
+Full numbers and proposed fix directions (a dual-path smoothed/fast check
+for the lag; adaptive, noise-floor-relative hysteresis instead of one
+fixed margin, the same principle `kalman.py`'s uncertainty-scaled
+threshold already uses) are in `TESTING.md`.
 
 ---
 
