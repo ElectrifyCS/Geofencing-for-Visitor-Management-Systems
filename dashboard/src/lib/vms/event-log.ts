@@ -38,7 +38,22 @@ const BASE_SEVERITY_SCORE: Record<string, number> = {
   nfc_tap_required: 3,
   nfc_spoof_attempt: 8,
   stairwell_loiter: 6,
+  repeat_breach_pattern: 9,
+  guard_dispatched: 0,
 };
+
+/**
+ * Event types that count as a genuine breach for KPI/escalation purposes —
+ * the single source of truth so the "Breaches" KPI and repeat-offender
+ * escalation detection can never quietly drift apart on what counts.
+ */
+export const BREACH_EVENT_TYPES: readonly string[] = [
+  "tether_breach",
+  "dwell_anomaly",
+  "loitering_unauthorized",
+  "tailgating",
+  "stairwell_loiter",
+];
 
 const RISK_ESCALATION_SCORE: Record<string, number> = {
   public: 0,

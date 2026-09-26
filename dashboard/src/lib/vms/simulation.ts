@@ -1,7 +1,8 @@
-import { EventLog, type Severity, type VmsEvent } from "./event-log";
+import { BREACH_EVENT_TYPES, EventLog, type Severity, type VmsEvent } from "./event-log";
 import { StairwellTracker } from "./stairwell";
 import { PatrolVerifier } from "./patrol";
 import { ZoneLockTracker } from "./zone-lock";
+import { detectEscalations, type EscalationCandidate } from "./escalation";
 import { proveEngines } from "./prove";
 import {
   CYCLE_S,
@@ -69,9 +70,23 @@ export type Snapshot = {
     breaches: number;
     floorCrossings: number;
     patrolMisses: number;
+    escalations: number;
   };
   latestCritical: VmsEvent | null;
   streamSeq: number;
+  /** Tags currently showing a repeat-breach pattern — see escalation.ts. */
+  escalations: (EscalationCandidate & { dispatched: boolean })[];
+  charts: {
+    /** Most recent events (all severities, for overall system pulse),
+     * grouped into fixed buckets by recency — not by absolute time,
+     * since timestamp_s resets every loop cycle while the event log
+     * itself does not, so absolute-time buckets would double-count
+     * across cycle boundaries. Bucketing by recent event order
+     * sidesteps that entirely. Oldest bucket first. */
+    activity: { bucket: number; info: number; warning: number; alert: number; critical: number }[];
+    /** Breach counts by entity, across the whole session, most first. */
+    byEntity: { entityId: string; displayName: string; count: number }[];
+  };
 };
 
 type Keyframe = {
@@ -245,9 +260,11 @@ const IDLE: Snapshot = {
       note: null,
     })),
   },
-  kpis: { tracked: 0, events: 0, denied: 0, breaches: 0, floorCrossings: 0, patrolMisses: 0 },
+  kpis: { tracked: 0, events: 0, denied: 0, breaches: 0, floorCrossings: 0, patrolMisses: 0, escalations: 0 },
   latestCritical: null,
   streamSeq: 0,
+  escalations: [],
+  charts: { activity: [], byEntity: [] },
 };
 
 export class Simulation {
@@ -272,6 +289,14 @@ export class Simulation {
   private zoneEnterAuth = new Map<string, boolean>();
   private recentEntries: { zone: string; id: string; t: number; auth: boolean }[] = [];
   private proven = false;
+  /** Entity ids currently showing a repeat-breach pattern, as of the last
+   * emit() — diffed each tick to log repeat_breach_pattern exactly once
+   * per new escalation, not on every tick it remains flagged. */
+  private lastEscalatedIds = new Set<string>();
+  /** Entity ids an operator has already dispatched a guard to. Pruned to
+   * only currently-flagged ids each tick, so a tag that clears and later
+   * re-escalates prompts a fresh dispatch rather than staying silenced. */
+  private dispatchedIds = new Set<string>();
 
   subscribe = (fn: () => void): (() => void) => {
     this.listeners.add(fn);
@@ -328,9 +353,46 @@ export class Simulation {
     this.emit();
   }
 
-  inject(kind: "missed-nfc" | "stair-loiter" | "floor-skip" | "tailgate"): void {
+  /** Operator acknowledges a flagged repeat-breach pattern and dispatches
+   * a guard. Logs an audit-trail event; does not itself change the
+   * underlying breach detection, which keeps evaluating independently. */
+  dispatch(entityId: string): void {
+    if (this.dispatchedIds.has(entityId)) return;
+    this.dispatchedIds.add(entityId);
+    const person = personById(entityId);
+    this.log.log(this.t, "guard_dispatched", entityId, `Guard dispatched to ${person?.name ?? entityId}`, {
+      source_module: "escalation",
+      display_name: person ? displayName(person) : entityId,
+    });
+    this.emit();
+  }
+
+  inject(kind: "missed-nfc" | "stair-loiter" | "floor-skip" | "tailgate" | "probe"): void {
     const t = this.t;
-    if (kind === "missed-nfc") {
+    if (kind === "probe") {
+      // Directly logs the breach events rather than scripting a physical
+      // path, the same way "missed-nfc" announces its condition directly:
+      // the point here is demonstrating the escalation/dispatch response on
+      // demand, not re-testing dwell detection's own trigger physics, which
+      // already has its own coverage. Three dwell_anomaly events for V-003,
+      // a few seconds apart, well inside the default 90s/3-breach window.
+      const guestP = personById("V-003")!;
+      const durations = [25, 40, 58];
+      for (let i = 0; i < durations.length; i++) {
+        this.log.log(
+          t + i * 2,
+          "dwell_anomaly",
+          "V-003",
+          `DWELL ANOMALY: V-003 in server_room for ${durations[i]}s (baseline 20s)`,
+          {
+            zone_id: "server_room",
+            risk_level: "prohibited",
+            source_module: "tracking",
+            display_name: displayName(guestP),
+          },
+        );
+      }
+    } else if (kind === "missed-nfc") {
       this.suppressNfc = true;
       this.log.log(t, "nfc_tap_required", "GRD-1", "Demo inject: NFC taps suppressed for this loop — BLE range will not count", {
         source_module: "patrol",
@@ -685,6 +747,50 @@ export class Simulation {
     this.streamSeq += 1;
     const events = this.log.query({ min_severity: this.minSeverity, limit: 80 });
     const all = this.log.query();
+
+    const escalated = detectEscalations(all, this.t);
+    const escalatedIds = new Set(escalated.map((e) => e.entityId));
+    for (const candidate of escalated) {
+      if (this.lastEscalatedIds.has(candidate.entityId)) continue;
+      // Newly crossed the threshold this tick — log it once, not every tick
+      // it remains flagged.
+      this.log.log(
+        this.t,
+        "repeat_breach_pattern",
+        candidate.entityId,
+        `${candidate.count} breaches in ${Math.round(candidate.lastAtS - candidate.firstAtS)}s — pattern suggests deliberate probing, not accidental wandering`,
+        { source_module: "escalation", display_name: candidate.displayName },
+      );
+    }
+    this.lastEscalatedIds = escalatedIds;
+    // A tag that's dispatched then clears (ages out of the window) should
+    // prompt a fresh dispatch if it escalates again later, not stay silenced.
+    for (const id of this.dispatchedIds) {
+      if (!escalatedIds.has(id)) this.dispatchedIds.delete(id);
+    }
+    const escalations = escalated.map((e) => ({ ...e, dispatched: this.dispatchedIds.has(e.entityId) }));
+
+    // All events, not just breaches — a SOC activity chart should show the
+    // overall pulse of the system, with severity stacking making a spike
+    // in breach-level events visible against ordinary background traffic
+    // (zone entries, patrol checkpoints, etc.), not a mostly-empty chart.
+    const recentEvents = all.slice(-60);
+    const BUCKET_SIZE = 5;
+    const activity: Snapshot["charts"]["activity"] = [];
+    for (let i = 0; i < recentEvents.length; i += BUCKET_SIZE) {
+      const slice = recentEvents.slice(i, i + BUCKET_SIZE);
+      const row = { bucket: activity.length, info: 0, warning: 0, alert: 0, critical: 0 };
+      for (const e of slice) row[e.severity] += 1;
+      activity.push(row);
+    }
+    const byEntityMap = new Map<string, { entityId: string; displayName: string; count: number }>();
+    for (const e of all) {
+      if (!BREACH_EVENT_TYPES.includes(e.event_type)) continue;
+      const existing = byEntityMap.get(e.entity_id);
+      if (existing) existing.count += 1;
+      else byEntityMap.set(e.entity_id, { entityId: e.entity_id, displayName: e.display_name ?? e.entity_id, count: 1 });
+    }
+    const byEntity = [...byEntityMap.values()].sort((a, b) => b.count - a.count);
     const occupants = this.stairs.occupants().map((o) => {
       const p = personById(o.entityId);
       return {
@@ -732,18 +838,17 @@ export class Simulation {
         tracked,
         events: all.length,
         denied: all.filter((e) => e.event_type === "permit_denied").length,
-        breaches: all.filter((e) =>
-          ["tether_breach", "dwell_anomaly", "loitering_unauthorized", "tailgating", "stairwell_loiter"].includes(
-            e.event_type,
-          ),
-        ).length,
+        breaches: all.filter((e) => BREACH_EVENT_TYPES.includes(e.event_type)).length,
         floorCrossings: all.filter((e) => e.event_type === "floor_crossing").length,
         patrolMisses: all.filter((e) =>
           ["patrol_missed", "patrol_overdue", "patrol_sequence_break", "nfc_spoof_attempt"].includes(e.event_type),
         ).length,
+        escalations: escalations.length,
       },
       latestCritical: [...all].reverse().find((e) => e.severity === "critical") ?? null,
       streamSeq: this.streamSeq,
+      escalations,
+      charts: { activity, byEntity },
     };
     for (const l of this.listeners) l();
   }

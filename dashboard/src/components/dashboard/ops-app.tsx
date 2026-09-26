@@ -3,9 +3,11 @@ import { Pause, Play, Radio } from "lucide-react";
 import { simulation, type Snapshot } from "@/lib/vms/simulation";
 import type { Severity } from "@/lib/vms/event-log";
 import { cn } from "@/lib/utils";
+import { EmergencyDispatch } from "./emergency-dispatch";
 import { EventFeed } from "./event-feed";
 import { FacilityMap, FloorPills } from "./facility-map";
 import { PatrolBoard } from "./patrol-board";
+import { ActivityChart, BreachLeaderboard } from "./soc-charts";
 import { StairwellShaft } from "./stairwell-shaft";
 
 function useOps(): Snapshot {
@@ -121,7 +123,7 @@ export function OpsApp() {
       ) : null}
 
       <main className="mx-auto max-w-[1400px] px-4 py-4 sm:px-6 sm:py-5">
-        <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+        <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-7">
           <Kpi label="Tracked" value={snap.kpis.tracked} />
           <Kpi label="Events" value={snap.kpis.events} />
           <Kpi label="Denied" value={snap.kpis.denied} tone="crit" />
@@ -132,6 +134,15 @@ export function OpsApp() {
             value={snap.kpis.patrolMisses}
             tone={snap.kpis.patrolMisses > 0 ? "crit" : "ok"}
           />
+          <Kpi
+            label="Escalations"
+            value={snap.kpis.escalations}
+            tone={snap.kpis.escalations > 0 ? "crit" : "ok"}
+          />
+        </div>
+
+        <div className="mb-4">
+          <EmergencyDispatch escalations={snap.escalations} />
         </div>
 
         <div className="mb-4 flex flex-col gap-3 lg:flex-row">
@@ -152,6 +163,7 @@ export function OpsApp() {
                 ["stair-loiter", "Stair loiter"],
                 ["floor-skip", "Floor skip"],
                 ["tailgate", "Tailgate"],
+                ["probe", "Repeat breach"],
               ] as const
             ).map(([id, label]) => (
               <button
@@ -185,6 +197,14 @@ export function OpsApp() {
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <StairwellShaft data={snap.stairwell} />
               <PatrolBoard data={snap.patrol} />
+            </div>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <section className="rounded-2xl bg-surface p-3 shadow-[var(--shadow-border)] sm:p-4">
+                <ActivityChart data={snap.charts.activity} />
+              </section>
+              <section className="rounded-2xl bg-surface p-3 shadow-[var(--shadow-border)] sm:p-4">
+                <BreachLeaderboard data={snap.charts.byEntity} />
+              </section>
             </div>
           </div>
           <div className="flex min-h-[420px] flex-col xl:max-h-[calc(100dvh-12rem)]">
