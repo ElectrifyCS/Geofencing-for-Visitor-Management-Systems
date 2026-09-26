@@ -331,7 +331,11 @@ floor-lock for stairwells, debounced zone-entry detection, mandatory
 NFC-tap patrol checkpoints (BLE proximity alone can never satisfy one),
 tailgating detection, and host-tether breaches — all driven by a
 scripted simulation (`dashboard/src/lib/vms/simulation.ts`), not real
-sensor data.
+sensor data. Built as an actual security-operations-center view rather
+than a single-purpose demo: alongside the live map and event stream, it
+tracks repeat-breach patterns per tag and surfaces an emergency-dispatch
+action, and charts overall event activity and top-breaching tags for an
+at-a-glance operator read, not just a scrolling log.
 
 ![VMS Sentinel dashboard — floor 2, live map and event stream](screenshots/floor-2.png)
 
@@ -355,9 +359,35 @@ Detection modules (`dashboard/src/lib/vms/`):
   transit-time checks between checkpoints.
 - **`event-log.ts`** — severity computed from event type + zone risk
   level, not hardcoded per event.
+- **`escalation.ts`** — flags a tag as a repeat-breach pattern when the
+  *same entity* produces 3+ breach-type events (tether/dwell/
+  loitering/tailgate/stairwell-loiter) within a 90-second window —
+  several breaches close together, suggesting deliberate probing rather
+  than one bad wander. Pure and stateless: re-derives candidates fresh
+  from the event log every call, so the UI just diffs this tick's
+  flagged tags against last tick's to log a new escalation exactly once,
+  not on every tick it remains flagged.
 - **`simulation.ts`** — ties it together: zone entry/exit + permit
-  checks, tailgating detection, host-tether breach detection, and
-  dwell/loitering anomalies in prohibited zones.
+  checks, tailgating detection, host-tether breach detection,
+  dwell/loitering anomalies in prohibited zones, and a `dispatch()` call
+  an operator triggers from the UI that logs an audit-trail event
+  without itself touching the underlying detection, which keeps
+  evaluating independently.
+
+`emergency-dispatch.tsx` surfaces any currently-flagged tags with a
+one-click "Dispatch guard" action per tag. Below, a real run: one tag
+already dispatched from an earlier flag, a second still live and
+escalating in the background from the ordinary simulated scenario, not
+manually triggered.
+
+![Emergency dispatch panel — one tag dispatched, one still flagged and escalating](screenshots/emergency-dispatch.png)
+
+`soc-charts.tsx` renders a stacked activity-trend chart
+(info/warning/alert/critical over recent events) and a breach-leaderboard
+bar chart (which tags are breaching most), both driven by data the
+simulation already computes each tick — no separate analytics pipeline.
+
+![SOC activity-trend and breach-leaderboard charts, with the trend chart's tooltip open](screenshots/soc-charts.png)
 
 Running it:
 
@@ -369,8 +399,9 @@ npm run dev
 
 Then open the printed local URL. Use the speed controls (1× / 4× / 10×)
 to run the demo loop faster, and the inject buttons (miss NFC tap, stair
-loiter, floor skip, tailgate) to force specific anomaly scenarios on
-demand.
+loiter, floor skip, tailgate, repeat breach) to force specific anomaly
+scenarios on demand — "repeat breach" demonstrates the escalation/
+dispatch flow directly rather than waiting for it to occur naturally.
 
 Tests: `dashboard/src/lib/vms/prove.ts` runs a handful of boot-time
 self-checks the moment the simulation starts — severity scoring escalates
@@ -378,12 +409,12 @@ correctly by risk level, the beacon-lock tracker stays stable where a
 naive approach would ping-pong, a stairwell climb produces a
 floor-crossing event, and standing in BLE range of an NFC checkpoint can
 never verify it. `npm test` also runs `dashboard/scripts/**/*.test.mjs`
-(build tooling) and, as of `zone-lock.ts`, real unit tests for the
-detection modules themselves under `dashboard/src/lib/vms/**/*.test.ts`
-— started with `ZoneLockTracker`'s debounce logic (locking behavior,
-boundary ping-pong resistance, an edge case in how a fresh tracker's
-first null reading is handled). `beacon.ts`, `stairwell.ts`, `patrol.ts`,
-and `event-log.ts` don't have their own unit tests yet.
+(build tooling) and real unit tests for the detection modules under
+`dashboard/src/lib/vms/**/*.test.ts` — `ZoneLockTracker`'s debounce logic
+and `escalation.ts`'s window/threshold logic (boundary inclusivity,
+cross-entity isolation, sort-tie-breaking) both have full coverage.
+`beacon.ts`, `stairwell.ts`, `patrol.ts`, and `event-log.ts` don't have
+their own unit tests yet.
 
 ### Field validation status (dashboard)
 
