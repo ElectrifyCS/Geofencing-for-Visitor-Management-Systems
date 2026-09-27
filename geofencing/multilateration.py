@@ -14,6 +14,16 @@ Math foundation (IB AA HL tie-ins):
     system of *linear* equations in (x, y, z) — systems of linear
     equations / vectors, solved by least squares when there are more
     anchors than the strict minimum (4, for an unambiguous 3D fix).
+  - Outlier rejection: robust statistics (median/MAD), the same tool
+    UserBehaviorProfile (models.py) already uses to keep one bad reading
+    from corrupting the very statistic used to judge it — mean/stddev
+    would be corrupted by the outlier itself; median/MAD isn't.
+  - Condition number: the weighted design matrix's condition number is
+    a direct linear-algebra measure of how geometrically well-determined
+    the solve is (dilution of precision) — anchors spread widely produce
+    a well-conditioned system; anchors bunched together or nearly
+    collinear (a narrow corridor) produce an ill-conditioned one, and
+    the *same* ranging noise turns into much larger position error.
 
 Depends only on numpy, consistent with the existing kalman.py.
 """
@@ -21,8 +31,8 @@ Depends only on numpy, consistent with the existing kalman.py.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -57,7 +67,22 @@ class Ranging:
     sigma_m: float = 1.0
 
 
-def _multilaterate_linear(anchors: Sequence[Anchor], rangings: Sequence[Ranging]) -> Optional[Point3D]:
+@dataclass(frozen=True)
+class MultilaterationResult:
+    """
+    The solve's answer, plus enough about *how* it got there for a caller
+    to decide how much to trust it — not just a bare (x, y, z).
+    """
+    position: Point3D
+    condition_number: float          # DOP proxy: higher = geometrically weaker fix
+    used_anchor_ids: List[str]       # anchors that contributed to the final solve
+    rejected_anchor_ids: List[str]   # anchors dropped as probable multipath/NLOS outliers
+    residuals_m: Dict[str, float]    # final |P - A_i| - d_i per USED anchor
+
+
+def _multilaterate_linear(
+    anchors: Sequence[Anchor], rangings: Sequence[Ranging]
+) -> Optional[Tuple[Point3D, float]]:
     """
     Closed-form linear solve. Fast, needs no initial guess, but noise-
     sensitive: it works with *squared* distances (di^2 - d0^2), so a
@@ -65,6 +90,12 @@ def _multilaterate_linear(anchors: Sequence[Anchor], rangings: Sequence[Ranging]
     noise into the linear system before the geometry solve even happens.
     Used as the starting point for the nonlinear refinement below, not
     as the final answer on its own.
+
+    Returns (position, condition_number) — the weighted design matrix's
+    condition number, a direct measure of how well the anchor geometry
+    determines the solution, independent of ranging noise. Returned here
+    since this is where the matrix already exists; callers use it to
+    gate confidence on the final fix (see multilaterate() below).
     """
     by_id = {a.anchor_id: a for a in anchors}
     usable = [r for r in rangings if r.anchor_id in by_id]
@@ -112,10 +143,12 @@ def _multilaterate_linear(anchors: Sequence[Anchor], rangings: Sequence[Ranging]
     b_weighted = b * sqrt_w
     try:
         solution, *_ = np.linalg.lstsq(A_weighted, b_weighted, rcond=None)
+        condition_number = float(np.linalg.cond(A_weighted))
     except np.linalg.LinAlgError:
         return None
 
-    return float(solution[0]), float(solution[1]), float(solution[2])
+    position = (float(solution[0]), float(solution[1]), float(solution[2]))
+    return position, condition_number
 
 
 def _refine_nonlinear(
@@ -171,18 +204,83 @@ def _refine_nonlinear(
     return float(P[0]), float(P[1]), float(P[2])
 
 
-def multilaterate(anchors: Sequence[Anchor], rangings: Sequence[Ranging]) -> Optional[Point3D]:
+def _residuals_m(position: Point3D, anchors: Sequence[Anchor], rangings: Sequence[Ranging]) -> Dict[str, float]:
+    """Absolute |P - A_i| - d_i for every ranging whose anchor is known."""
+    by_id = {a.anchor_id: a for a in anchors}
+    return {
+        r.anchor_id: abs(math.dist(position, by_id[r.anchor_id].position) - r.distance_m)
+        for r in rangings
+        if r.anchor_id in by_id
+    }
+
+
+def multilaterate(
+    anchors: Sequence[Anchor],
+    rangings: Sequence[Ranging],
+    outlier_k: float = 3.0,
+    max_rejection_rounds: int = 2,
+) -> Optional[MultilaterationResult]:
     """
     Solve for tag (x, y, z) from N anchor distance measurements: a fast
     closed-form linear solve for an initial estimate, immediately refined
     by a few Gauss-Newton iterations against the true (non-squared)
     distance residuals. Requires at least 4 anchors, not all at the same
     height (see the __main__ demo below for why).
+
+    After solving, checks whether any single anchor's final residual is
+    an outlier relative to the others — median + outlier_k * (MAD, scaled
+    to a consistent sigma estimate) — the signature of a multipath/NLOS
+    reading that ranging noise alone doesn't explain. If so, drops the
+    single worst offender and re-solves from scratch (geometry changes
+    enough removing one anchor that a second flagged anchor may resolve
+    on its own, rather than trusting one noisy pass to get every
+    rejection right at once), up to max_rejection_rounds times. Never
+    rejects below 4 anchors — a degraded fix beats no fix.
     """
-    linear_estimate = _multilaterate_linear(anchors, rangings)
-    if linear_estimate is None:
-        return None
-    return _refine_nonlinear(linear_estimate, anchors, rangings)
+    current_rangings = list(rangings)
+    rejected: List[str] = []
+
+    for _ in range(max_rejection_rounds + 1):
+        linear = _multilaterate_linear(anchors, current_rangings)
+        if linear is None:
+            return None
+        linear_position, condition_number = linear
+        position = _refine_nonlinear(linear_position, anchors, current_rangings)
+        residuals = _residuals_m(position, anchors, current_rangings)
+        used_ids = list(residuals.keys())
+
+        if len(used_ids) <= 4:
+            return MultilaterationResult(
+                position=position, condition_number=condition_number,
+                used_anchor_ids=used_ids, rejected_anchor_ids=rejected,
+                residuals_m=residuals,
+            )
+
+        values = np.array(list(residuals.values()))
+        median = float(np.median(values))
+        mad = float(np.median(np.abs(values - median))) + 1e-6
+        robust_sigma = 1.4826 * mad  # standard MAD -> sigma consistency factor under normality
+        threshold = median + outlier_k * robust_sigma
+
+        outliers = [aid for aid, v in residuals.items() if v > threshold]
+        if not outliers:
+            return MultilaterationResult(
+                position=position, condition_number=condition_number,
+                used_anchor_ids=used_ids, rejected_anchor_ids=rejected,
+                residuals_m=residuals,
+            )
+
+        worst = max(outliers, key=lambda aid: residuals[aid])
+        rejected.append(worst)
+        current_rangings = [r for r in current_rangings if r.anchor_id != worst]
+
+    # Ran out of rejection rounds — return the last computed solve rather
+    # than looping forever on a persistently disagreeing anchor set.
+    return MultilaterationResult(
+        position=position, condition_number=condition_number,
+        used_anchor_ids=used_ids, rejected_anchor_ids=rejected,
+        residuals_m=residuals,
+    )
 
 
 if __name__ == "__main__":
@@ -215,12 +313,14 @@ if __name__ == "__main__":
         noisy_d = true_d + rng.normal(0, 0.15)  # 15cm stddev, typical UWB
         rangings.append(Ranging(anchor_id=a.anchor_id, distance_m=noisy_d, sigma_m=0.15))
 
-    estimate = multilaterate(anchors, rangings)
-    error = math.dist(true_position, estimate)
+    result = multilaterate(anchors, rangings)
+    error = math.dist(true_position, result.position)
 
     print(f"True position:      {true_position}")
-    print(f"Estimated position: {tuple(round(v, 3) for v in estimate)}")
+    print(f"Estimated position: {tuple(round(v, 3) for v in result.position)}")
     print(f"Error:               {error * 100:.1f} cm")
+    print(f"Condition number:    {result.condition_number:.1f} (well-spread anchors -> low)")
+    print(f"Anchors used:        {result.used_anchor_ids} (none rejected, as expected: no bad reading here)")
     print(
         "\nNOTE: over many noise draws, horizontal (x, y) error for this "
         "layout runs ~30cm RMS but vertical (z) error runs ~130cm+ RMS -- "
@@ -239,4 +339,65 @@ if __name__ == "__main__":
 
     # RSSI-to-distance sanity check
     d = rssi_to_distance(rssi_dbm=-67, tx_power_dbm=-40, path_loss_exponent=2.5)
-    print(f"RSSI -67dBm (TxPower -40dBm, n=2.5) -> {d:.2f} m estimated distance")
+    print(f"RSSI -67dBm (TxPower -40dBm, n=2.5) -> {d:.2f} m estimated distance\n")
+
+    # --- Multipath outlier rejection: one anchor's reading corrupted ---
+    print("=== Multipath outlier rejection ===")
+    print("Same layout and true position, but A3's reading is corrupted by")
+    print("+3.5m (a plausible reflected-path multipath error, not just noise).\n")
+
+    corrupted_rangings = [
+        Ranging(
+            anchor_id=r.anchor_id,
+            distance_m=r.distance_m + (3.5 if r.anchor_id == "A3" else 0.0),
+            sigma_m=r.sigma_m,
+        )
+        for r in rangings
+    ]
+
+    # Baseline: what the solve looks like with NO rejection at all (the
+    # module's entire previous behavior), for direct comparison.
+    naive_linear = _multilaterate_linear(anchors, corrupted_rangings)
+    naive_position = _refine_nonlinear(naive_linear[0], anchors, corrupted_rangings)
+    naive_error = math.dist(true_position, naive_position)
+
+    corrected = multilaterate(anchors, corrupted_rangings)
+    corrected_error = math.dist(true_position, corrected.position)
+
+    print(f"Without rejection (previous behavior): error = {naive_error * 100:.1f} cm")
+    print(f"With rejection:                        error = {corrected_error * 100:.1f} cm")
+    print(f"Anchor(s) rejected: {corrected.rejected_anchor_ids} (expected: ['A3'])")
+    print(f"Residuals (m) on the accepted solve: "
+          f"{ {k: round(v, 3) for k, v in corrected.residuals_m.items()} }")
+
+    # --- Dilution of precision: narrow-corridor geometry vs. the room ---
+    print("\n=== Dilution of precision (anchor geometry, not ranging noise) ===")
+    print("Same 15cm ranging noise as above, but anchors arranged along a")
+    print("narrow 2m-wide corridor instead of spread across a 20x15m room.\n")
+
+    corridor_anchors = [
+        Anchor("C1", (0.0, 0.0, 2.4)),
+        Anchor("C2", (0.0, 2.0, 2.4)),
+        Anchor("C3", (15.0, 0.0, 2.4)),
+        Anchor("C4", (15.0, 2.0, 0.3)),
+    ]
+    corridor_true: Point3D = (7.5, 1.0, 1.4)
+    corridor_rangings = []
+    for a in corridor_anchors:
+        true_d = math.dist(corridor_true, a.position)
+        noisy_d = true_d + rng.normal(0, 0.15)
+        corridor_rangings.append(Ranging(anchor_id=a.anchor_id, distance_m=noisy_d, sigma_m=0.15))
+
+    corridor_result = multilaterate(corridor_anchors, corridor_rangings)
+    corridor_error = math.dist(corridor_true, corridor_result.position)
+
+    print(f"Room layout:     condition number {result.condition_number:6.1f}, error {error*100:5.1f} cm")
+    print(f"Corridor layout: condition number {corridor_result.condition_number:6.1f}, error {corridor_error*100:5.1f} cm")
+    print(
+        "\nSame 15cm ranging noise both times -- the corridor's higher "
+        "condition number is exactly what predicts its larger position "
+        "error before it happens, which is the point of exposing it: a "
+        "caller can gate confidence (or refuse a high-risk-zone decision) "
+        "on condition_number directly, not just discover after the fact "
+        "that a fix in a bad-geometry area was less trustworthy."
+    )

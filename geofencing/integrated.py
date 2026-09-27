@@ -188,6 +188,20 @@ class IntegratedVisitorManagement:
         """
         Compute a tag position from anchor distance measurements (or RSSI).
         Returns a PositionSample ready for downstream filtering/verification.
+
+        multilaterate() now also does two things this method surfaces:
+          - Rejects any single anchor whose reading disagrees with the
+            others by more than ranging noise explains (likely multipath/
+            NLOS), logged as an event when it happens rather than silently
+            dropped, since a caller reading the audit trail should be able
+            to see that a fix came from 3 anchors instead of 4 and why.
+          - Returns the solve's condition number (dilution of precision) --
+            fed into this PositionSample's sigma_m via
+            _dop_inflation_factor() so every confidence-aware check already
+            in this codebase (TetherMonitor, geofence containment) becomes
+            automatically more conservative on a geometrically weak fix,
+            rather than adding a second, parallel confidence signal every
+            caller would need to remember to check separately.
         """
         if rssi_dict:
             # Convert RSSI to distances
@@ -196,20 +210,59 @@ class IntegratedVisitorManagement:
                 for aid in rssi_dict
             }
 
+        # NOTE: every anchor gets the same sigma_m here because this
+        # method's own input (a plain anchor_id -> distance_m dict) has
+        # nowhere to carry per-anchor uncertainty. multilaterate() itself
+        # fully supports per-anchor sigma_m (see Ranging) for a caller
+        # that has it -- this method just doesn't accept it yet.
+        base_sigma_m = 0.15
         rangings = [
-            Ranging(anchor_id=aid, distance_m=d, sigma_m=0.15)
+            Ranging(anchor_id=aid, distance_m=d, sigma_m=base_sigma_m)
             for aid, d in rangings_dict.items()
         ]
 
-        position_3d = multilaterate(list(self.anchor_network.values()), rangings)
-        if position_3d:
-            return PositionSample(
-                entity_id="tag",  # should be overridden by caller
-                timestamp_s=datetime.now().timestamp(),
-                position=position_3d,
-                sigma_m=0.3,
+        result = multilaterate(list(self.anchor_network.values()), rangings)
+        if result is None:
+            return None
+
+        if result.rejected_anchor_ids:
+            self.event_log.log(
+                datetime.now().timestamp(), "multilateration_outlier_rejected", "system",
+                f"Rejected anchor(s) {', '.join(result.rejected_anchor_ids)} as probable "
+                f"multipath/NLOS (residual exceeded robust threshold); solved with "
+                f"{len(result.used_anchor_ids)} remaining anchor(s)",
+                source_module="multilateration",
             )
-        return None
+
+        return PositionSample(
+            entity_id="tag",  # should be overridden by caller
+            timestamp_s=datetime.now().timestamp(),
+            position=result.position,
+            sigma_m=base_sigma_m * self._dop_inflation_factor(result.condition_number),
+        )
+
+    @staticmethod
+    def _dop_inflation_factor(condition_number: float, healthy_condition_number: float = 10.0) -> float:
+        """
+        Turns a raw condition number into a multiplier on position
+        uncertainty. Log-scaled since condition number legitimately spans
+        orders of magnitude (a well-spread room vs. a narrow corridor, per
+        multilateration.py's own demo) -- linear scaling would barely
+        react to the corridor case and overreact to minor variation in the
+        healthy case.
+
+        healthy_condition_number=10.0 and the log10 scaling are a
+        reasoned starting point (condition numbers near this were
+        observed in the well-conditioned room-layout demo), NOT a
+        rigorously derived constant -- flagged the same way the elevator
+        beacon-detection radius and other site-specific numbers in this
+        project are: needs calibration against real anchor layouts once
+        that data exists, the same caveat multi-mode positioning above
+        already carries for the identical reason.
+        """
+        if condition_number <= healthy_condition_number:
+            return 1.0
+        return 1.0 + math.log10(condition_number / healthy_condition_number)
 
     # =========================================================================
     # Real-Time Policy Enforcement: Escort Tethering
@@ -876,3 +929,32 @@ if __name__ == "__main__":
     except ImportError:
         print("  fakeredis not installed — skipping crash-recovery demo "
               "(pip install fakeredis to run it)")
+
+    # --- Multilateration outlier rejection + DOP-aware confidence, ---
+    # --- exercised through the actual integration-layer entry point, ---
+    # --- not just multilateration.py's own standalone demo.          ---
+    print("\n=== Multilateration: outlier rejection + DOP-aware confidence ===")
+    dop_integrated = IntegratedVisitorManagement(VisitorManagementSystem())
+    for anchor_id, pos in [
+        ("A1", (0.0, 0.0, 3.0)), ("A2", (20.0, 0.0, 3.0)),
+        ("A3", (20.0, 15.0, 0.3)), ("A4", (0.0, 15.0, 0.3)), ("A5", (10.0, 7.5, 1.5)),
+    ]:
+        dop_integrated.add_anchor(anchor_id, pos)
+
+    clean_readings = {"A1": 12.9, "A2": 10.9, "A3": 12.9, "A4": 15.0, "A5": 2.7}
+    clean_fix = dop_integrated.multilaterate_position(clean_readings)
+    print(f"  Clean readings:     position={tuple(round(v, 2) for v in clean_fix.position)}, "
+          f"sigma_m={clean_fix.sigma_m:.3f} (near base 0.15 -- good geometry, no rejection)")
+
+    corrupted_readings = dict(clean_readings)
+    corrupted_readings["A3"] += 3.5  # simulated multipath reflection
+    corrupted_fix = dop_integrated.multilaterate_position(corrupted_readings)
+    outlier_events = [
+        e for e in dop_integrated.event_log.query()
+        if e.event_type == "multilateration_outlier_rejected"
+    ]
+    print(f"  Corrupted (A3 +3.5m): position={tuple(round(v, 2) for v in corrupted_fix.position)}, "
+          f"sigma_m={corrupted_fix.sigma_m:.3f}")
+    print(f"  Outlier-rejection event logged: {len(outlier_events) == 1}")
+    if outlier_events:
+        print(f"    \"{outlier_events[0].message}\"")
