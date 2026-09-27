@@ -9,12 +9,20 @@ This layer provides:
   3. Emergency response coordination (mustering, proximity dispatch)
   4. Hardware lifecycle management (tags, batteries, anti-passback)
   5. 3D floor-aware zone resolution via ZoneHierarchy
+  6. Restart-surviving state for ZoneLockTracker (see state_store.py) — a
+     deploy, crash, or OOM no longer silently erases every visitor's zone
+     lock with no trace; the recovery itself is logged to EventLog for
+     incident recap. DwellMonitor, PresenceTracker, ReliabilityWarmup,
+     TagRegistry and PermitRegistry have the identical gap and are NOT
+     yet covered — deliberately scoped out of this pass.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 import math
+import time
+from dataclasses import asdict
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 from .models import (
@@ -34,6 +42,7 @@ from .tag_lifecycle import (
 )
 from .event_log import EventLog
 from .permits import Permit, PermitRegistry
+from .state_store import StateStore, InMemoryStateStore
 
 
 class IntegratedVisitorManagement:
@@ -44,7 +53,12 @@ class IntegratedVisitorManagement:
     and real-time policy enforcement is critical.
     """
 
-    def __init__(self, vms: VisitorManagementSystem, presence_ttl_s: float = 240.0):
+    def __init__(
+        self,
+        vms: VisitorManagementSystem,
+        presence_ttl_s: float = 240.0,
+        state_store: Optional[StateStore] = None,
+    ):
         self.vms = vms
         self.zone_hierarchy = ZoneHierarchy()
         self.tag_registry = TagRegistry()
@@ -56,8 +70,11 @@ class IntegratedVisitorManagement:
         self.coordinate_calibrator: Optional[CoordinateCalibrator] = None
         self.event_log = EventLog()
         self.last_known_zones: Dict[str, str] = {}
-        # Both built and tested standalone earlier, neither previously
-        # wired into the actual position-update pipeline -- fixed below.
+        # In-process cache of ZoneLockTracker instances, keyed by visitor.
+        # The durable source of truth is self.state_store below — this
+        # dict just avoids a store round-trip on every single position
+        # update for a visitor already loaded this session. See
+        # _load_zone_lock_tracker / _save_zone_lock_tracker.
         self.zone_lock_trackers: Dict[str, ZoneLockTracker] = {}
         # (visitor_id, zone_id) -> was their entry authorized. Read by
         # the loitering check to tell whether someone dwelling too long
@@ -74,6 +91,62 @@ class IntegratedVisitorManagement:
         # escorted tags. Escort *presence* is verified live against
         # actual proximity, not just assumed from this mapping.
         self.escort_assignments: Dict[str, str] = {}
+
+        # --- Restart-surviving state (ZoneLockTracker only, this pass) ---
+        self.state_store: StateStore = state_store if state_store is not None else InMemoryStateStore()
+
+        # Recovery check: any "zone_lock:" key already present in the
+        # store predates this __init__ call, since nothing above has
+        # written anything yet. That can only mean a PREVIOUS process
+        # wrote it and this one is picking the store back up — i.e. a
+        # real restart happened, not a fresh boot against an empty
+        # store. An operator restarting a process on purpose is
+        # unremarkable; a process that vanished and came back with
+        # visitors already mid-track is exactly what an incident recap
+        # needs a record of, so this logs loudly rather than silently.
+        recovered_keys = self.state_store.keys("zone_lock:")
+        if recovered_keys:
+            recovered_ids = [k.split(":", 1)[1] for k in recovered_keys]
+            last_write = self.state_store.get("_meta:last_write")
+            gap_desc = (
+                f"{time.time() - last_write['ts']:.0f}s since last write"
+                if last_write else "gap unknown (no last-write record found)"
+            )
+            self.event_log.log(
+                time.time(), "system_recovered", "system",
+                f"Recovered zone-lock state for {len(recovered_ids)} visitor(s) "
+                f"after restart ({gap_desc}): {', '.join(recovered_ids)}",
+                source_module="state_store",
+            )
+
+    # =========================================================================
+    # Zone-lock persistence (load-cache-save around the state store)
+    # =========================================================================
+
+    def _load_zone_lock_tracker(self, visitor_id: str) -> ZoneLockTracker:
+        """
+        Returns this visitor's ZoneLockTracker, restoring it from the
+        durable store on first use this process (e.g. right after a
+        restart) rather than always creating a fresh one. Once loaded,
+        the in-process cache (self.zone_lock_trackers) serves subsequent
+        calls without hitting the store again.
+        """
+        if visitor_id in self.zone_lock_trackers:
+            return self.zone_lock_trackers[visitor_id]
+        persisted = self.state_store.get(f"zone_lock:{visitor_id}")
+        tracker = ZoneLockTracker(**persisted) if persisted else ZoneLockTracker()
+        self.zone_lock_trackers[visitor_id] = tracker
+        return tracker
+
+    def _save_zone_lock_tracker(self, visitor_id: str, tracker: ZoneLockTracker) -> None:
+        """
+        Persists this visitor's current tracker state to the durable
+        store. ZoneLockTracker's fields are all plain primitives
+        (str/None/int), so dataclasses.asdict() round-trips cleanly
+        through JSON with no custom (de)serialization needed.
+        """
+        self.state_store.set(f"zone_lock:{visitor_id}", asdict(tracker))
+        self.state_store.set("_meta:last_write", {"ts": time.time()})
 
     # =========================================================================
     # Zone Hierarchy & Floor-Aware Containment
@@ -539,10 +612,13 @@ class IntegratedVisitorManagement:
         # a raw zone flip only becomes a real zone_exit/zone_entry event
         # once it's been observed 3 consecutive times, not on a single
         # noisy reading near a boundary (the exact ping-pong failure
-        # mode found by on-site testing).
-        lock_tracker = self.zone_lock_trackers.setdefault(visitor_id, ZoneLockTracker())
+        # mode found by on-site testing). The tracker itself is now
+        # restart-surviving: loaded from self.state_store on first use
+        # this process, saved back after every update.
+        lock_tracker = self._load_zone_lock_tracker(visitor_id)
         previous_confirmed = lock_tracker.locked_zone
         confirmed_zone = lock_tracker.update(zone_name)
+        self._save_zone_lock_tracker(visitor_id, lock_tracker)
         if confirmed_zone != previous_confirmed:
             if previous_confirmed is not None:
                 self.event_log.log(
@@ -741,3 +817,62 @@ if __name__ == "__main__":
     print(f"\nMuster report: {muster_data}")
 
     print("\n✓ Integration layer working!")
+
+    # --- Crash-recovery demo: ZoneLockTracker state must survive a full ---
+    # --- process restart, and the recovery itself must be logged.       ---
+    print("\n=== Crash recovery (Redis-backed state) ===")
+    try:
+        import fakeredis
+        from .state_store import RedisStateStore
+
+        shared_redis = fakeredis.FakeStrictRedis()
+        store = RedisStateStore(shared_redis)
+
+        # "Before the crash": one process tracks a visitor through enough
+        # consistent readings to actually confirm a zone lock (not just
+        # a candidate in progress).
+        vms_a = VisitorManagementSystem()
+        integrated_a = IntegratedVisitorManagement(vms_a, state_store=store)
+        vms_a.set_building_layout(layout)
+        integrated_a.setup_zones_with_hierarchy([lobby, server_room])
+        visitor2 = Visitor(
+            visitor_id="V-002", name="Bob", badge_tag="B-002",
+            entry_time=datetime.now(), allowed_areas=["main_lobby"],
+        )
+        vms_a.register_visitor(visitor2)
+        for _ in range(3):
+            pos = PositionSample("V-002", datetime.now().timestamp(), (0.0, 0.0, 1.5), sigma_m=5.0)
+            integrated_a.update_visitor_position("V-002", pos, zone_name="main_lobby")
+        locked_before = integrated_a.zone_lock_trackers["V-002"].locked_zone
+        print(f"  Before 'crash': V-002 locked zone = {locked_before}")
+
+        # "The crash": drop the process entirely. Nothing survives this
+        # but whatever was written to the shared Redis-compatible store.
+        del integrated_a
+
+        # "After restart": brand-new process (brand-new VMS, brand-new
+        # IntegratedVisitorManagement, brand-new empty in-process dicts),
+        # pointed at the SAME store.
+        vms_b = VisitorManagementSystem()
+        integrated_b = IntegratedVisitorManagement(vms_b, state_store=store)
+
+        # NOTE: EventLog.query()'s exact signature is inferred from the
+        # README's description, not from reading event_log.py directly —
+        # adjust this line if it doesn't match once you run it.
+        recovered_events = [
+            e for e in integrated_b.event_log.query() if e.event_type == "system_recovered"
+        ]
+        print(f"  After 'restart': recovery event logged = {len(recovered_events) == 1}")
+        if recovered_events:
+            print(f"    \"{recovered_events[0].message}\"")
+
+        restored_tracker = integrated_b._load_zone_lock_tracker("V-002")
+        print(
+            f"  After 'restart': V-002 locked zone restored = {restored_tracker.locked_zone} "
+            f"(expected '{locked_before}', with zero replayed position updates)"
+        )
+        assert restored_tracker.locked_zone == locked_before, "zone lock did not survive the restart"
+        print("  OK — the tracker's lock state came from Redis, not from replaying events.")
+    except ImportError:
+        print("  fakeredis not installed — skipping crash-recovery demo "
+              "(pip install fakeredis to run it)")
