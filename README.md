@@ -103,10 +103,10 @@ These upgrades directly address the live-testing challenges of coordinate drift 
 
 ## v2 roadmap: zone mapping, positioning, and real-time policy enforcement
 
-Eight modules building toward a fuller production system: dynamic floor
+Nine modules building toward a fuller production system: dynamic floor
 plans, indoor positioning, real-time policy enforcement, incident
-response, tag lifecycle management, elevator/vertical tracking, and
-time-windowed authorization.
+response, tag lifecycle management, elevator/vertical tracking,
+time-windowed authorization, and restart-surviving state.
 
 - **`floorplan.py`** — blueprint-to-real-world coordinate calibration via
   a complex-number similarity transform, and a `ZoneHierarchy` that
@@ -169,6 +169,12 @@ time-windowed authorization.
   "A. Mwangi", not "TAG-0042"), not passed as an argument — a standard
   tag cannot be upgraded by re-checking in, and a guest cannot hold two
   live tags at once.
+- **`state_store.py`** — a small `StateStore` interface (`InMemoryStateStore`
+  default, `RedisStateStore` opt-in) so tracker state can survive a
+  process restart instead of living only in a plain dict. Wired into
+  `integrated.py` for `ZoneLockTracker` — see "Restart resilience"
+  below. Knows nothing about any specific tracker; callers decide what
+  to serialize.
 
 The same AA HL foundation carries through the v2 modules: complex numbers (blueprint calibration),
 vectors (distance/containment/directional checks), sequences and series
@@ -265,6 +271,45 @@ directly and found to already work correctly, is in
 
 This section gets updated as on-site results come in, not claimed
 ahead of them.
+
+### Restart resilience (ZoneLockTracker, Redis-backed)
+
+Every tracker in this project — `ZoneLockTracker`, `DwellMonitor`,
+`PresenceTracker`, `ReliabilityWarmup`, `TagRegistry`, `PermitRegistry` —
+originally lived as a plain dict on a single in-process object. A deploy,
+a crash, or an OOM kill wiped all of it instantly: every visitor's zone
+lock, every dwell timer, every warm-up state, gone with no trace. Fine
+for a demo run; a real incident with no record of what state existed
+right before it happened is a real gap for whoever has to investigate
+it afterward.
+
+`state_store.py` fixes this for one tracker so far — `ZoneLockTracker`,
+via `integrated.py`. `min_confirm_readings`/`locked_zone`/the in-progress
+candidate now live in a `StateStore` (a plain dict by default,
+`InMemoryStateStore` — nothing changes for `demo.py` or existing callers
+unless a `RedisStateStore` is explicitly configured), loaded on first use
+each process and saved after every update. On startup, if the store
+already has zone-lock state — which can only mean a *previous* process
+wrote it, since nothing in a fresh `__init__` has written anything yet —
+that's logged as a `system_recovered` event straight into the existing
+`EventLog`, not a separate logging system: `"Recovered zone-lock state
+for 3 visitor(s) after restart (140s since last write): V-001, V-002,
+V-003"` shows up in the same audit trail as every breach event, exactly
+where an incident recap would already be looking.
+
+Verified end-to-end, not just unit-tested in isolation: one process
+tracks a visitor to a confirmed zone lock, gets discarded entirely
+("the crash"), and a second process — brand-new object, brand-new
+in-memory dicts, same underlying store — comes back with the same
+locked zone restored, with zero position updates replayed. Tests run
+against `fakeredis`, not a live Redis server.
+
+**Not done yet, same gap, deliberately out of scope for this pass:**
+`DwellMonitor`, `PresenceTracker`, `ReliabilityWarmup`, `TagRegistry`,
+and `PermitRegistry` all still reset to zero on restart. Also not done:
+making thresholds like `min_confirm_readings` live-tunable per checkpoint
+via Redis without a redeploy — a related but separate idea from making
+the *state itself* durable, addressed here.
 
 ### Live operations dashboard
 
@@ -459,7 +504,8 @@ Geofencing-for-Visitor-Management-Systems/
 │   ├── tag_lifecycle.py     # provisioning, battery health, anti-passback/tag-drop
 │   ├── integrated.py        # wires the v2 modules into VisitorManagementSystem
 │   ├── elevator_tracking.py # 1D Kalman vertical tracking, accelerometer + beacon fusion
-│   └── permits.py           # time-windowed zone/floor authorization
+│   ├── permits.py           # time-windowed zone/floor authorization
+│   └── state_store.py       # restart-surviving state (ZoneLockTracker so far), Redis-backed
 ├── demo.py                  # self-contained demo (produces the two images above)
 ├── Geofencing.py             # thin backwards-compatible entry point
 ├── live_event_dashboard.html       # live map, playback, breach alerts, boundary drawing tools
@@ -528,6 +574,11 @@ The script runs a self-contained demonstration with synthetic visitors and simul
 - Python 3.9+
 - numpy ≥ 1.24
 - matplotlib ≥ 3.7
+- redis ≥ 5.0 — only required if you configure a `RedisStateStore`;
+  `demo.py` and everything else use the in-memory default and need
+  neither this nor a running Redis server
+- fakeredis ≥ 2.20 — test/demo only, exercises the Redis-backed path
+  with no live server required
 
 ## Status
 
