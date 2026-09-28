@@ -1,15 +1,24 @@
 """
 Geofencing for Visitor Management Systems
 
-A production-grade GPS spoofing detection system for visitor management that uses:
+A math-driven location-verification library for visitor management. It
+flags physically implausible movement (GPS/RFID spoofing), enforces zone
+rules, and produces an auditable event stream, using:
   - 2D constant-velocity Kalman filtering for position smoothing
   - Adaptive thresholds (logarithmic convergence)
   - Badge/RFID correlation for multi-factor anomaly detection
   - 3D floor-aware zone containment (ZoneHierarchy)
-  - Anchor-based multilateration (UWB/BLE alternative to GPS)
-  - Real-time policy enforcement (escort tethering, dwell monitoring, tag drops)
+  - Anchor-based multilateration (UWB/BLE alternative to GPS), with
+    multipath outlier rejection and a dilution-of-precision signal
+  - Real-time policy enforcement (escort tethering, dwell monitoring,
+    debounced zone locks, tag drops)
+  - Time-windowed permits and privilege bound to the physical tag
+  - Elevator/vertical tracking with beacon identity locking
   - Emergency response (automated mustering, proximity dispatch)
-  - Hardware lifecycle management (tag provisioning, battery health, anti-passback)
+  - Hardware lifecycle management (tag provisioning, battery health,
+    anti-passback, reconnect warm-up)
+  - A unified EventLog with severity computed from zone risk
+  - Restart-surviving state (StateStore; ZoneLockTracker so far)
 
 Core modules:
   - kalman.py: Kalman filtering + adaptive thresholds
@@ -20,10 +29,18 @@ Core modules:
   - synthetic.py: Synthetic path generators for testing
   - floorplan.py: Floor plan calibration & 3D zone hierarchy
   - multilateration.py: UWB/BLE anchor-based positioning
-  - tracking.py: Escort tethering, dwell monitoring, heading computation
-  - incident.py: Emergency mustering and proximity dispatch
-  - tag_lifecycle.py: Tag provisioning, battery health, anti-passback
+  - tracking.py: Escort tethering, dwell monitoring, zone lock, heading
+  - incident.py: Emergency mustering, presence (TTL) tracking, dispatch
+  - tag_lifecycle.py: Tag registry, battery health, anti-passback, warm-up
+  - elevator_tracking.py: 1D elevator Kalman + beacon identity lock
+  - permits.py: Time-windowed zone/floor authorization
+  - event_log.py: Unified event sink with subscribe()/query()
+  - state_store.py: In-memory and Redis-backed state persistence
   - integrated.py: Master orchestration layer wiring everything together
+
+Optional dependencies (the core package needs only numpy):
+  - matplotlib: GeofenceSystem.visualize_path()   -> geofencing-vms[plot]
+  - redis:      RedisStateStore's real connection  -> geofencing-vms[redis]
 
 Mathematical foundations (IB AA HL):
   - Complex numbers (CoordinateCalibrator similarity transforms)
@@ -50,9 +67,14 @@ from .synthetic import (
     generate_spoofed_path,
     generate_extreme_spoofed_path,
 )
-# Prototype modules (now wired in)
 from .floorplan import CoordinateCalibrator, ZoneHierarchy
-from .multilateration import Anchor, Ranging, multilaterate, rssi_to_distance
+from .multilateration import (
+    Anchor,
+    Ranging,
+    MultilaterationResult,
+    multilaterate,
+    rssi_to_distance,
+)
 from .tracking import (
     PositionSample,
     TetherAlert,
@@ -60,11 +82,22 @@ from .tracking import (
     DwellBaseline,
     DwellAlert,
     DwellMonitor,
+    ZoneLockTracker,
     Heading,
     compute_heading,
     intent_angle_deg,
+    FEET_TO_METRES,
 )
-from .incident import MusterZoneCount, MusterReport, DispatchCandidate, muster, nearest_guards
+from .incident import (
+    MusterZoneCount,
+    MusterReport,
+    ExitEvent,
+    PresenceTracker,
+    DispatchCandidate,
+    position_confidence,
+    muster,
+    nearest_guards,
+)
 from .tag_lifecycle import (
     TagAssignment,
     TagRegistry,
@@ -75,7 +108,25 @@ from .tag_lifecycle import (
     check_speed_anomaly,
     TagDropAlert,
     TagDropDetector,
+    ReliabilityWarmup,
 )
+from .elevator_tracking import (
+    FloorBeacon,
+    BeaconRegistry,
+    BeaconLockTracker,
+    ElevatorKalman1D,
+    resolve_floor,
+    correct_with_identified_beacon,
+    check_stuck_between_floors,
+    # tag_lifecycle and elevator_tracking both define check_speed_anomaly
+    # (visitor anti-passback vs. elevator car speed). The visitor one keeps
+    # the plain name above since that's what was already exported; the
+    # elevator one is aliased so both stay reachable from the top level.
+    check_speed_anomaly as check_elevator_speed_anomaly,
+)
+from .event_log import Severity, Event, EventLog, compute_severity
+from .permits import Permit, PermitRegistry, check_authorization
+from .state_store import StateStore, InMemoryStateStore, RedisStateStore
 from .integrated import IntegratedVisitorManagement
 
 __all__ = [
@@ -97,19 +148,34 @@ __all__ = [
     # Floor planning & zones
     "CoordinateCalibrator", "ZoneHierarchy",
     # Multilateration (UWB/BLE)
-    "Anchor", "Ranging", "multilaterate", "rssi_to_distance",
+    "Anchor", "Ranging", "MultilaterationResult", "multilaterate", "rssi_to_distance",
     # Tracking & policy enforcement
     "PositionSample", "TetherAlert", "TetherMonitor", "DwellBaseline", "DwellAlert",
-    "DwellMonitor", "Heading", "compute_heading", "intent_angle_deg",
+    "DwellMonitor", "ZoneLockTracker", "Heading", "compute_heading", "intent_angle_deg",
+    "FEET_TO_METRES",
     # Incident response
-    "MusterZoneCount", "MusterReport", "DispatchCandidate", "muster", "nearest_guards",
+    "MusterZoneCount", "MusterReport", "ExitEvent", "PresenceTracker",
+    "DispatchCandidate", "position_confidence", "muster", "nearest_guards",
     # Tag lifecycle
     "TagAssignment", "TagRegistry", "BatteryReading", "BatteryPrediction", "predict_battery",
     "SpeedAnomaly", "check_speed_anomaly", "TagDropAlert", "TagDropDetector",
+    "ReliabilityWarmup",
+    # Elevator / vertical tracking
+    "FloorBeacon", "BeaconRegistry", "BeaconLockTracker", "ElevatorKalman1D",
+    "resolve_floor", "correct_with_identified_beacon", "check_stuck_between_floors",
+    "check_elevator_speed_anomaly",
+    # Event log
+    "Severity", "Event", "EventLog", "compute_severity",
+    # Permits
+    "Permit", "PermitRegistry", "check_authorization",
+    # State persistence
+    "StateStore", "InMemoryStateStore", "RedisStateStore",
     # Master integration
     "IntegratedVisitorManagement",
 ]
 
-__version__ = "1.0.0"
+# Single source of truth for the package version: pyproject.toml reads this
+# line (see [tool.hatch.version]), so the two can never disagree.
+__version__ = "0.1.0"
 __author__ = "ElectrifyCS"
 __description__ = "Location-based verification system for visitor management with GPS spoofing detection"

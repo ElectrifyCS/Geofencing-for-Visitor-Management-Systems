@@ -5,6 +5,10 @@ Core detection engine – upgraded.
 - Uncertainty-aware (covariance-scaled) anomaly score
 - Polygonal zones + transition-graph checks
 - Badge risk fused into the final score
+
+matplotlib is an OPTIONAL dependency, used only by
+GeofenceSystem.visualize_path(). It is imported lazily inside that
+method so `import geofencing` needs nothing beyond numpy.
 """
 
 from __future__ import annotations
@@ -12,8 +16,6 @@ from __future__ import annotations
 from typing import List, Tuple, Optional
 from datetime import datetime
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.patches import Circle, Polygon as MplPolygon
 
 from .kalman import KalmanFilter2DConstantVelocity, get_adaptive_thresholds, compute_log_convergence_factor
 from .models import (
@@ -420,6 +422,17 @@ class GeofenceSystem:
         result: DetectionResult,
         title: str = "Visitor Path Analysis",
     ):
+        # matplotlib is optional: imported here, not at module top, so
+        # `import geofencing` works with numpy alone.
+        try:
+            import matplotlib.pyplot as plt
+            from matplotlib.patches import Circle, Polygon as MplPolygon
+        except ImportError as exc:
+            raise ImportError(
+                "visualize_path() needs matplotlib, an optional dependency. "
+                "Install it with: pip install 'geofencing-vms[plot]'"
+            ) from exc
+
         coords = np.array([[p.x, p.y] for p in positions], dtype=float)
         times = np.array([p.t for p in positions], dtype=float)
 
