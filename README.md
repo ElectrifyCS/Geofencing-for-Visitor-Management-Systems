@@ -404,6 +404,16 @@ Detection modules (`dashboard/src/lib/vms/`):
   transit-time checks between checkpoints.
 - **`event-log.ts`** — severity computed from event type + zone risk
   level, not hardcoded per event.
+- **`rf.ts`** — log-distance path-loss model (RSSI ↔ distance) with
+  log-normal shadowing noise, plus a direct port of `kalman.py`'s
+  logarithmic-convergence confidence ramp. Backs a `RangeEstimator` that
+  EMA-smooths noisy simulated RSSI into a distance/accuracy/confidence
+  reading — the same true-position-vs-measured-position gap
+  `kalman.py`'s Kalman layer exists to close, applied to BLE instead of
+  GPS. Every tracked entity's accuracy/confidence shown in the UI comes
+  from ranging against the nearest zone's reader, not ground truth;
+  confidence resets and visibly rebuilds after a zone change rather than
+  sitting pinned at 100%.
 - **`escalation.ts`** — flags a tag as a repeat-breach pattern when the
   *same entity* produces 3+ breach-type events (tether/dwell/
   loitering/tailgate/stairwell-loiter) within a 90-second window —
@@ -417,7 +427,14 @@ Detection modules (`dashboard/src/lib/vms/`):
   dwell/loitering anomalies in prohibited zones, and a `dispatch()` call
   an operator triggers from the UI that logs an audit-trail event
   without itself touching the underlying detection, which keeps
-  evaluating independently.
+  evaluating independently. Tether breaches and the server_room
+  dwell-anomaly threshold are both RSSI-derived rather than
+  ground-truth: tether breach uses a `RangeEstimator`-smoothed distance
+  (± accuracy and confidence % in the alert message), and dwell anomaly
+  compares against an adaptive per-zone baseline (Welford running mean,
+  seeded with a calibration prior, fed only by *non-anomalous* visits —
+  an attack is never allowed to teach the system it's normal) instead of
+  one fixed threshold.
 
 `emergency-dispatch.tsx` surfaces any currently-flagged tags with a
 one-click "Dispatch guard" action per tag. Below, a real run: one tag
@@ -433,6 +450,14 @@ bar chart (which tags are breaching most), both driven by data the
 simulation already computes each tick — no separate analytics pipeline.
 
 ![SOC activity-trend and breach-leaderboard charts, with the trend chart's tooltip open](screenshots/soc-charts.png)
+
+`positioning-telemetry.tsx` adds two more panels in the same style: a
+zone risk-occupancy chart (live headcount per room zone, colored by
+risk tier) and a per-tag positioning-telemetry list showing simulated
+RSSI, ± accuracy in meters, and confidence % for every tracked entity —
+the same numbers driving the translucent confidence ring drawn around
+each dot on the live map, which widens (and whose confidence % resets
+and rebuilds) whenever a tag crosses into a new zone.
 
 Running it:
 
