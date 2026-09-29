@@ -14,23 +14,39 @@ Math foundation (IB AA HL tie-ins):
     system of *linear* equations in (x, y, z) — systems of linear
     equations / vectors, solved by least squares when there are more
     anchors than the strict minimum (4, for an unambiguous 3D fix).
-  - Outlier rejection: leave-one-out (LOO) residuals, not residuals
-    against the single joint fit. Found as a real bug in testing, not a
-    theoretical concern: a single corrupted reading pulls the JOINT fit
-    toward itself, spreading elevated residuals across the good anchors
-    too and masking which one is actually at fault -- with only 5
-    anchors, a median/MAD statistic computed from the joint-fit
-    residuals is itself contaminated by the same outlier it's supposed
-    to catch, and missed an obviously corrupted anchor entirely (see
-    module history). Leave-one-out fixes this structurally: solving
-    without anchor i and checking how well that INDEPENDENTLY-obtained
-    position predicts anchor i's own reading only produces a large
-    residual for the anchor that's actually bad, since it's the one
-    case where the comparison position isn't influenced by it. Each
-    anchor is then judged against its own declared sigma_m, not a
-    population statistic from a handful of points -- consistent with
-    the uncertainty-aware philosophy used everywhere else in this
-    project, and sidesteps small-sample statistics entirely.
+  - Outlier rejection: reject by POST-EXCLUSION INTERNAL CONSISTENCY, not
+    by how well an exclusion predicts the excluded anchor's own reading.
+    Two earlier approaches were tried and both failed in testing, worth
+    recording honestly rather than pretending this was the first idea
+    that worked:
+      1. Residuals against the single joint fit (all anchors together):
+         a bad reading pulls the JOINT fit toward itself, inflating the
+         GOOD anchors' residuals too -- missed an injected outlier
+         entirely with only 5 anchors, since the resulting median/MAD
+         statistic was itself contaminated by the same outlier it was
+         supposed to catch.
+      2. Leave-one-out residual for the excluded anchor's OWN reading,
+         judged against its own sigma_m: WORSE than #1, not just
+         insufficient -- when the excluded candidate is a GOOD anchor
+         and the actual bad one stays in the remaining set, that
+         remaining solve (now at the bare 4-anchor minimum, still
+         contaminated) can go numerically unstable and produce an
+         enormous, essentially arbitrary residual for whatever was
+         excluded. In testing this picked a good anchor as "the worst
+         offender" and returned a fix with a *2.4 kilometer* error --
+         confidently wrong is worse than not rejecting at all.
+      3. What's implemented below: for each candidate, exclude it, solve
+         with the rest, and measure how well THAT REMAINING SET AGREES
+         WITH ITSELF (RMS residual among the kept anchors against their
+         own joint solve) -- not how well it predicts the excluded one.
+         Only excluding the genuinely bad anchor leaves a well-
+         conditioned, mutually-consistent remaining set; excluding a
+         good anchor while the bad one stays in still shows poor (or
+         numerically unstable, which also shows up as large) internal
+         agreement. This can't be fooled by one point's runaway
+         residual the way #2 was, since it's judging the whole
+         remaining set against itself. Verified against the exact
+         failure case #2 produced -- see the module demo below.
   - Condition number: the weighted design matrix's condition number is
     a direct linear-algebra measure of how geometrically well-determined
     the solve is (dilution of precision) — anchors spread widely produce
@@ -77,8 +93,9 @@ class Ranging:
     distance_m: float
     # Optional per-reading uncertainty (e.g. derived from RSSI variance).
     # Anchors with tighter uncertainty get weighted more heavily in the
-    # solve, AND this is what each anchor's own outlier threshold is
-    # scaled against (see multilaterate()).
+    # solve, and the average sigma_m across current anchors sets the
+    # "this looks like ordinary noise" bound outlier rejection compares
+    # against (see multilaterate()).
     sigma_m: float = 1.0
 
 
@@ -239,6 +256,11 @@ def _residuals_m(position: Point3D, anchors: Sequence[Anchor], rangings: Sequenc
     }
 
 
+def _rms(residuals: Dict[str, float]) -> float:
+    values = np.array(list(residuals.values()), dtype=float)
+    return float(np.sqrt(np.mean(values ** 2))) if len(values) else 0.0
+
+
 def multilaterate(
     anchors: Sequence[Anchor],
     rangings: Sequence[Ranging],
@@ -252,25 +274,18 @@ def multilaterate(
     distance residuals. Requires at least 4 anchors, not all at the same
     height (see the __main__ demo below for why).
 
-    After solving, checks each anchor via leave-one-out: solve again
-    using every OTHER anchor, and see how well that independently-
-    obtained position predicts THIS anchor's own reading. If the LOO
-    residual exceeds outlier_k * this anchor's own sigma_m, it's flagged
-    as a probable multipath/NLOS reading -- ranging noise alone
-    shouldn't produce a residual that far outside the anchor's own
-    declared uncertainty. The single worst offender (by how many
-    multiples of its own sigma it exceeds) is dropped per round, and the
-    whole solve repeats from scratch, up to max_rejection_rounds times.
-    Never rejects below 4 anchors remaining — a degraded fix beats none.
-
-    Why leave-one-out rather than checking residuals against the single
-    joint fit: a bad reading pulls the joint fit toward itself, which
-    inflates the GOOD anchors' residuals too, not just the bad one's —
-    confirmed in testing to actually miss an injected outlier entirely
-    with only 5 anchors. Excluding a candidate anchor before solving
-    means the comparison position can't be dragged off by whatever
-    that candidate's reading says, so only a genuinely bad anchor
-    produces a large residual against it.
+    Outlier rejection, per round: first checks whether the full-set fit
+    already looks like ordinary noise (RMS residual within outlier_k *
+    average sigma_m) -- if so, nothing to reject, done. Otherwise, tries
+    excluding each anchor in turn and measures how well the REMAINING
+    anchors agree with each other (RMS residual among the kept anchors
+    against their own joint solve, not against the excluded one -- see
+    the module docstring for why that distinction is load-bearing, not
+    stylistic). Only the exclusion that brings the remaining RMS back
+    down to ordinary-noise levels is accepted; if no single exclusion
+    achieves that, nothing is rejected rather than guessing. Repeats up
+    to max_rejection_rounds times. Never rejects below 4 anchors
+    remaining — a degraded fix beats none.
     """
     current_rangings = list(rangings)
     rejected: List[str] = []
@@ -290,38 +305,45 @@ def multilaterate(
                 residuals_m=residuals,
             )
 
-        by_id = {a.anchor_id: a for a in anchors}
-        by_anchor_id_ranging = {r.anchor_id: r for r in current_rangings}
-        loo_excess: Dict[str, float] = {}  # LOO residual, in multiples of the anchor's own sigma_m
+        full_rms = _rms(residuals)
+        mean_sigma = float(np.mean([r.sigma_m for r in current_rangings if r.anchor_id in used_ids]))
+        clean_bound = outlier_k * max(mean_sigma, 1e-6)
+
+        if full_rms <= clean_bound:
+            # Already looks like ordinary noise -- nothing to reject.
+            return MultilaterationResult(
+                position=position, condition_number=condition_number,
+                used_anchor_ids=used_ids, rejected_anchor_ids=rejected,
+                residuals_m=residuals,
+            )
+
+        best_candidate: Optional[str] = None
+        best_remaining_rms = full_rms
 
         for candidate_id in used_ids:
-            remaining = [r for r in current_rangings if r.anchor_id != candidate_id]
-            loo_solved = _solve(anchors, remaining)
-            if loo_solved is None:
+            remaining_rangings = [r for r in current_rangings if r.anchor_id != candidate_id]
+            remaining_solved = _solve(anchors, remaining_rangings)
+            if remaining_solved is None:
                 continue
-            loo_position, _ = loo_solved
-            candidate_ranging = by_anchor_id_ranging[candidate_id]
-            predicted_d = math.dist(loo_position, by_id[candidate_id].position)
-            loo_residual = abs(predicted_d - candidate_ranging.distance_m)
-            loo_excess[candidate_id] = loo_residual / max(candidate_ranging.sigma_m, 1e-6)
+            remaining_position, _ = remaining_solved
+            remaining_residuals = _residuals_m(remaining_position, anchors, remaining_rangings)
+            remaining_rms = _rms(remaining_residuals)
+            if remaining_rms < best_remaining_rms:
+                best_remaining_rms = remaining_rms
+                best_candidate = candidate_id
 
-        if not loo_excess:
+        if best_candidate is None or best_remaining_rms > clean_bound:
+            # No single exclusion actually restores ordinary-noise-level
+            # agreement -- don't guess-remove a reading that doesn't
+            # actually fix the problem. Return the honest, degraded fit.
             return MultilaterationResult(
                 position=position, condition_number=condition_number,
                 used_anchor_ids=used_ids, rejected_anchor_ids=rejected,
                 residuals_m=residuals,
             )
 
-        worst_id, worst_excess = max(loo_excess.items(), key=lambda kv: kv[1])
-        if worst_excess <= outlier_k:
-            return MultilaterationResult(
-                position=position, condition_number=condition_number,
-                used_anchor_ids=used_ids, rejected_anchor_ids=rejected,
-                residuals_m=residuals,
-            )
-
-        rejected.append(worst_id)
-        current_rangings = [r for r in current_rangings if r.anchor_id != worst_id]
+        rejected.append(best_candidate)
+        current_rangings = [r for r in current_rangings if r.anchor_id != best_candidate]
 
     # Ran out of rejection rounds — return the last computed solve rather
     # than looping forever on a persistently disagreeing anchor set.
@@ -392,7 +414,7 @@ if __name__ == "__main__":
     print(f"RSSI -67dBm (TxPower -40dBm, n=2.5) -> {d:.2f} m estimated distance\n")
 
     # --- Multipath outlier rejection: one anchor's reading corrupted ---
-    print("=== Multipath outlier rejection (leave-one-out) ===")
+    print("=== Multipath outlier rejection (post-exclusion internal consistency) ===")
     print("Same layout and true position, but A3's reading is corrupted by")
     print("+3.5m (a plausible reflected-path multipath error, not just noise).\n")
 
