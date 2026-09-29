@@ -4,6 +4,7 @@ import { PatrolVerifier } from "./patrol";
 import { ZoneLockTracker } from "./zone-lock";
 import { detectEscalations, type EscalationCandidate } from "./escalation";
 import { proveEngines } from "./prove";
+import { RangeEstimator } from "./rf";
 import {
   CYCLE_S,
   NIGHT_LOOP,
@@ -14,11 +15,16 @@ import {
   displayName,
   floorOfZ,
   isAuthorized,
+  nearestZoneOnFloor,
   personById,
   resolveZone,
   LANDINGS,
   type Person,
+  type RiskLevel,
 } from "./facility";
+
+/** Minimum authorized server_room threshold before an adaptive baseline exists. */
+const DWELL_ANOMALY_FACTOR = 1.5;
 
 export type EntityPose = {
   id: string;
@@ -33,6 +39,17 @@ export type EntityPose = {
   zoneId: string | null;
   zoneName: string | null;
   hidden: boolean;
+  /** RSSI-derived ranging estimate to the nearest fixed reader — not ground truth. */
+  accuracyM: number;
+  confidencePct: number;
+  rssiDbm: number;
+};
+
+export type ZoneOccupancy = {
+  zoneId: string;
+  zoneName: string;
+  risk: RiskLevel;
+  count: number;
 };
 
 export type Snapshot = {
@@ -86,6 +103,8 @@ export type Snapshot = {
     activity: { bucket: number; info: number; warning: number; alert: number; critical: number }[];
     /** Breach counts by entity, across the whole session, most first. */
     byEntity: { entityId: string; displayName: string; count: number }[];
+    /** Live occupancy per room zone, joined with its risk tier. */
+    zoneOccupancy: ZoneOccupancy[];
   };
 };
 
@@ -107,6 +126,9 @@ type EntityRuntime = {
   dwellLogged: boolean;
   lastTap: string | null;
   hidden: boolean;
+  rangeEstimator: RangeEstimator;
+  /** Zone whose centroid the range estimator is currently ranging against. */
+  signalReaderZone: string | null;
 };
 
 function lerp(a: number, b: number, u: number): number {
@@ -264,7 +286,7 @@ const IDLE: Snapshot = {
   latestCritical: null,
   streamSeq: 0,
   escalations: [],
-  charts: { activity: [], byEntity: [] },
+  charts: { activity: [], byEntity: [], zoneOccupancy: [] },
 };
 
 export class Simulation {
@@ -297,6 +319,17 @@ export class Simulation {
    * only currently-flagged ids each tick, so a tag that clears and later
    * re-escalates prompts a fresh dispatch rather than staying silenced. */
   private dispatchedIds = new Set<string>();
+  /** RSSI-based ranging for the host<->visitor tether, separate from ground-truth distance. */
+  private tetherEstimator = new RangeEstimator(0.3);
+  /**
+   * Adaptive per-zone dwell baseline (running mean, Welford-style),
+   * seeded with an install-time calibration prior. Only completed,
+   * non-anomalous authorized visits feed it back — an anomaly is never
+   * allowed to teach the system that it's normal.
+   */
+  private dwellBaseline = new Map<string, { mean: number; n: number }>([
+    ["server_room", { mean: SERVER_DWELL_S, n: 6 }],
+  ]);
 
   subscribe = (fn: () => void): (() => void) => {
     this.listeners.add(fn);
@@ -378,12 +411,13 @@ export class Simulation {
       // a few seconds apart, well inside the default 90s/3-breach window.
       const guestP = personById("V-003")!;
       const durations = [25, 40, 58];
+      const baseline = this.dwellBaseline.get("server_room") ?? { mean: SERVER_DWELL_S, n: 0 };
       for (let i = 0; i < durations.length; i++) {
         this.log.log(
           t + i * 2,
           "dwell_anomaly",
           "V-003",
-          `DWELL ANOMALY: V-003 in server_room for ${durations[i]}s (baseline 20s)`,
+          `DWELL ANOMALY: V-003 in server_room for ${durations[i]}s (adaptive baseline ${baseline.mean.toFixed(0)}s over ${baseline.n} visits)`,
           {
             zone_id: "server_room",
             risk_level: "prohibited",
@@ -394,7 +428,7 @@ export class Simulation {
       }
     } else if (kind === "missed-nfc") {
       this.suppressNfc = true;
-      this.log.log(t, "nfc_tap_required", "GRD-1", "Demo inject: NFC taps suppressed for this loop — BLE range will not count", {
+      this.log.log(t, "nfc_tap_required", "GRD-1", "Operator injected scenario: NFC taps suppressed for this loop — BLE range will not count", {
         source_module: "patrol",
         display_name: displayName(personById("GRD-1")!),
       });
@@ -440,6 +474,7 @@ export class Simulation {
     this.recentEntries = [];
     this.checkInLogged = false;
     this.lastTetherLog = -99;
+    this.tetherEstimator.reset();
     const odd = this.cycle % 2 === 1;
     this.suppressNfc = odd;
     this.runtimes.clear();
@@ -462,6 +497,8 @@ export class Simulation {
         dwellLogged: false,
         lastTap: null,
         hidden: false,
+        rangeEstimator: new RangeEstimator(),
+        signalReaderZone: null,
       });
     }
   }
@@ -508,6 +545,9 @@ export class Simulation {
         zoneId: zone?.id ?? null,
         zoneName: zone?.name ?? null,
         hidden: rt.hidden,
+        accuracyM: 0,
+        confidencePct: 0,
+        rssiDbm: -999,
       };
       poses.push(pose);
       byId.set(pose.id, pose);
@@ -529,6 +569,28 @@ export class Simulation {
       );
 
       const confirmed = rt.zoneLock.update(zone?.id ?? null);
+
+      // Range against the nearest fixed reader (locked zone's centroid, or
+      // the nearest room if currently between zones). Re-acquiring a new
+      // reader resets the estimator, so confidence visibly ramps back up
+      // after a zone change instead of staying pinned at 100%.
+      const readerZone =
+        (confirmed && ZONES.find((z) => z.id === confirmed)) ||
+        (zone ?? nearestZoneOnFloor(kf.x, kf.y, pose.floor));
+      const readerZoneId = readerZone?.id ?? null;
+      if (readerZoneId !== rt.signalReaderZone) {
+        rt.rangeEstimator.reset();
+        rt.signalReaderZone = readerZoneId;
+      }
+      if (readerZone) {
+        const rx = (readerZone.x0 + readerZone.x1) / 2;
+        const ry = (readerZone.y0 + readerZone.y1) / 2;
+        const reading = rt.rangeEstimator.observe(Math.hypot(kf.x - rx, kf.y - ry));
+        pose.accuracyM = reading.accuracyM;
+        pose.confidencePct = Math.round(reading.confidence * 100);
+        pose.rssiDbm = reading.rssiDbm;
+      }
+
       if (confirmed !== rt.lastZone) {
         if (rt.lastZone) {
           this.log.log(t, "zone_exit", rt.person.id, `Left ${rt.lastZone}`, {
@@ -536,6 +598,9 @@ export class Simulation {
             source_module: "integrated",
             display_name: displayName(rt.person),
           });
+          if (rt.lastZone === "server_room" && rt.zoneEnteredAt != null && !rt.dwellLogged) {
+            this.recordDwell("server_room", t - rt.zoneEnteredAt);
+          }
         }
         if (confirmed) {
           const zn = ZONES.find((z) => z.id === confirmed);
@@ -581,20 +646,16 @@ export class Simulation {
         rt.dwellLogged = false;
       }
 
-      if (
-        confirmed === "server_room" &&
-        rt.zoneEnteredAt != null &&
-        t - rt.zoneEnteredAt > SERVER_DWELL_S &&
-        !rt.dwellLogged
-      ) {
-        rt.dwellLogged = true;
+      if (confirmed === "server_room" && rt.zoneEnteredAt != null && !rt.dwellLogged) {
+        const elapsed = t - rt.zoneEnteredAt;
         const auth = this.zoneEnterAuth.get(`${rt.person.id}:server_room`) ?? false;
-        if (!auth) {
+        if (!auth && elapsed > SERVER_DWELL_S) {
+          rt.dwellLogged = true;
           this.log.log(
             t,
             "loitering_unauthorized",
             rt.person.id,
-            `Unauthorized presence AND lingering in server_room: ${Math.round(t - rt.zoneEnteredAt)}s`,
+            `Unauthorized presence AND lingering in server_room: ${Math.round(elapsed)}s`,
             {
               zone_id: "server_room",
               risk_level: "prohibited",
@@ -602,19 +663,24 @@ export class Simulation {
               display_name: displayName(rt.person),
             },
           );
-        } else {
-          this.log.log(
-            t,
-            "dwell_anomaly",
-            rt.person.id,
-            `DWELL ANOMALY: ${rt.person.id} in server_room for ${Math.round(t - rt.zoneEnteredAt)}s (baseline 20s)`,
-            {
-              zone_id: "server_room",
-              risk_level: "prohibited",
-              source_module: "tracking",
-              display_name: displayName(rt.person),
-            },
-          );
+        } else if (auth) {
+          const baseline = this.dwellBaseline.get("server_room") ?? { mean: SERVER_DWELL_S, n: 0 };
+          const threshold = Math.max(SERVER_DWELL_S, baseline.mean * DWELL_ANOMALY_FACTOR);
+          if (elapsed > threshold) {
+            rt.dwellLogged = true;
+            this.log.log(
+              t,
+              "dwell_anomaly",
+              rt.person.id,
+              `DWELL ANOMALY: ${rt.person.id} in server_room for ${Math.round(elapsed)}s (adaptive baseline ${baseline.mean.toFixed(0)}s over ${baseline.n} visits, threshold ${threshold.toFixed(0)}s)`,
+              {
+                zone_id: "server_room",
+                risk_level: "prohibited",
+                source_module: "tracking",
+                display_name: displayName(rt.person),
+              },
+            );
+          }
         }
       }
 
@@ -649,15 +715,16 @@ export class Simulation {
     const hostPose = byId.get("HOST-1");
     const vis = byId.get("V-002");
     if (hostPose && vis && !vis.hidden && !hostPose.hidden) {
-      const d = Math.hypot(hostPose.x - vis.x, hostPose.y - vis.y);
-      if (d > TETHER_LIMIT_M && vis.zoneId && t - this.lastTetherLog > 11) {
+      const trueD = Math.hypot(hostPose.x - vis.x, hostPose.y - vis.y);
+      const ranging = this.tetherEstimator.observe(trueD);
+      if (ranging.estDistanceM > TETHER_LIMIT_M && vis.zoneId && t - this.lastTetherLog > 11) {
         this.lastTetherLog = t;
         const zn = ZONES.find((z) => z.id === vis.zoneId);
         this.log.log(
           t,
           "tether_breach",
           "V-002",
-          `TETHER BREACH: V-002 is ${d.toFixed(1)}m from HOST-1 (limit ${TETHER_LIMIT_M}m)`,
+          `TETHER BREACH: V-002 est ${ranging.estDistanceM.toFixed(1)}m from HOST-1 (±${ranging.accuracyM.toFixed(1)}m, ${Math.round(ranging.confidence * 100)}% confidence, limit ${TETHER_LIMIT_M}m)`,
           {
             zone_id: vis.zoneId,
             risk_level: zn?.risk,
@@ -700,6 +767,14 @@ export class Simulation {
       }
     }
     this.recentEntries.push({ zone, id: person.id, t, auth });
+  }
+
+  /** Folds one completed, non-anomalous dwell into the zone's running baseline mean. */
+  private recordDwell(zoneId: string, durationS: number): void {
+    const cur = this.dwellBaseline.get(zoneId) ?? { mean: durationS, n: 0 };
+    const n = cur.n + 1;
+    const mean = cur.mean + (durationS - cur.mean) / n;
+    this.dwellBaseline.set(zoneId, { mean, n });
   }
 
   private logCheckIn(t: number): void {
@@ -803,6 +878,7 @@ export class Simulation {
     });
     const lit = new Set(occupants.map((o) => o.lockedFloor).filter(Boolean) as string[]);
     const tracked = this.lastPoses.filter((e) => !e.hidden).length;
+    const zoneOccupancy = zoneOccupancyOf(this.lastPoses);
     this.snapshot = {
       t: this.t,
       cycle: this.cycle,
@@ -848,10 +924,24 @@ export class Simulation {
       latestCritical: [...all].reverse().find((e) => e.severity === "critical") ?? null,
       streamSeq: this.streamSeq,
       escalations,
-      charts: { activity, byEntity },
+      charts: { activity, byEntity, zoneOccupancy },
     };
     for (const l of this.listeners) l();
   }
+}
+
+function zoneOccupancyOf(poses: EntityPose[]): ZoneOccupancy[] {
+  const counts = new Map<string, number>();
+  for (const p of poses) {
+    if (p.hidden || !p.zoneId) continue;
+    counts.set(p.zoneId, (counts.get(p.zoneId) ?? 0) + 1);
+  }
+  return ZONES.filter((z) => z.kind === "room").map((z) => ({
+    zoneId: z.id,
+    zoneName: z.name,
+    risk: z.risk,
+    count: counts.get(z.id) ?? 0,
+  }));
 }
 
 export const simulation = new Simulation();

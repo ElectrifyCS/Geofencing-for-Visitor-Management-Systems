@@ -150,16 +150,32 @@ export function FacilityMap({
         const lifts = layoutEntityLabels(
           here.map((e) => {
             const [cx, cy] = px(e.x, e.y);
-            return { id: e.id, cx, cy, width: labelWidth(e.name) };
+            return { id: e.id, cx, cy, width: labelWidth(e.name, e.confidencePct) };
           }),
         );
+        const ringScale = (SX + SY) / 2;
         return visible.map((e) => {
           const [cx, cy] = px(e.x, e.y);
           const onFloor = e.floor === floor;
           const fill = TONE[e.tone] ?? TONE.unk;
-          const lift = lifts.get(e.id) ?? -11;
+          const lift = lifts.get(e.id) ?? -18;
+          const ringR = Math.max(5, e.accuracyM * ringScale);
+          const conf = e.confidencePct / 100;
           return (
             <g key={e.id} opacity={onFloor ? 1 : 0.42}>
+              {onFloor ? (
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r={ringR}
+                  fill={fill}
+                  fillOpacity={0.06 + 0.05 * conf}
+                  stroke={fill}
+                  strokeOpacity={0.22 + 0.25 * conf}
+                  strokeWidth={1}
+                  strokeDasharray={e.confidencePct < 60 ? "2 2" : undefined}
+                />
+              ) : null}
               <circle
                 cx={cx}
                 cy={cy}
@@ -174,8 +190,8 @@ export function FacilityMap({
                   <rect
                     x={cx + 9}
                     y={cy + lift - 8}
-                    width={labelWidth(e.name)}
-                    height={14}
+                    width={labelWidth(e.name, e.confidencePct)}
+                    height={22}
                     rx={3}
                     fill="var(--color-bg)"
                     fillOpacity={0.85}
@@ -190,6 +206,15 @@ export function FacilityMap({
                   >
                     {e.name}
                   </text>
+                  <text
+                    x={cx + 13}
+                    y={cy + lift + 12}
+                    fill="var(--color-subtle)"
+                    fontSize={8.5}
+                    fontFamily="var(--font-mono)"
+                  >
+                    {`±${e.accuracyM.toFixed(1)}m · ${e.confidencePct}%`}
+                  </text>
                 </>
               ) : null}
             </g>
@@ -200,9 +225,11 @@ export function FacilityMap({
   );
 }
 
-/** Approximate on-screen label pill width for a given name, capped like before. */
-function labelWidth(name: string): number {
-  return Math.min(86, name.length * 6.4 + 8);
+/** Approximate on-screen label pill width for a given name + accuracy subtext, capped like before. */
+function labelWidth(name: string, confidencePct: number): number {
+  const nameW = name.length * 6.4;
+  const subW = `±0.0m · ${confidencePct}%`.length * 5.1;
+  return Math.min(96, Math.max(nameW, subW) + 8);
 }
 
 /**
@@ -215,8 +242,8 @@ function labelWidth(name: string): number {
 function layoutEntityLabels(
   points: { id: string; cx: number; cy: number; width: number }[],
 ): Map<string, number> {
-  const LABEL_H = 14;
-  const CANDIDATES = [-11, 7, -27, 23, -43, 39, -59, 55];
+  const LABEL_H = 22;
+  const CANDIDATES = [-18, 14, -34, 30, -50, 46, -66, 62];
   const placed: { left: number; right: number; top: number; bottom: number }[] = [];
   const lifts = new Map<string, number>();
 

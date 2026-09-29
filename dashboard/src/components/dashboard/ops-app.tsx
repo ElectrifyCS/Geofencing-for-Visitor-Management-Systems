@@ -9,6 +9,7 @@ import { FacilityMap, FloorPills } from "./facility-map";
 import { PatrolBoard } from "./patrol-board";
 import { ActivityChart, BreachLeaderboard } from "./soc-charts";
 import { StairwellShaft } from "./stairwell-shaft";
+import { SignalQualityPanel, ZoneOccupancyChart } from "./positioning-telemetry";
 
 function useOps(): Snapshot {
   return useSyncExternalStore(
@@ -73,7 +74,7 @@ export function OpsApp() {
                 </h1>
               </div>
               <p className="mt-0.5 text-sm text-muted">
-                Demo Facility HQ · live EventLog, not a recorded replay
+                Facility HQ — East Wing · live EventLog, not a recorded replay
               </p>
             </div>
           </div>
@@ -156,25 +157,30 @@ export function OpsApp() {
             <span className="hidden sm:inline">Stream live · seq {snap.streamSeq}</span>
             <span className="sm:hidden">seq {snap.streamSeq}</span>
           </button>
-          <div className="flex flex-wrap gap-2">
-            {(
-              [
-                ["missed-nfc", "Miss NFC tap"],
-                ["stair-loiter", "Stair loiter"],
-                ["floor-skip", "Floor skip"],
-                ["tailgate", "Tailgate"],
-                ["probe", "Repeat breach"],
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => simulation.inject(id)}
-                className="min-h-11 rounded-xl bg-surface px-3 text-sm text-fg shadow-[var(--shadow-border)] transition-[transform,background-color] duration-150 ease-out hover:bg-elevated active:scale-[0.96]"
-              >
-                {label}
-              </button>
-            ))}
+          <div className="flex flex-col gap-1.5">
+            <p className="px-1 text-xs font-medium tracking-wider text-subtle uppercase">
+              Scenario injection
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {(
+                [
+                  ["missed-nfc", "Miss NFC tap"],
+                  ["stair-loiter", "Stair loiter"],
+                  ["floor-skip", "Floor skip"],
+                  ["tailgate", "Tailgate"],
+                  ["probe", "Repeat breach"],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => simulation.inject(id)}
+                  className="min-h-11 rounded-xl bg-surface px-3 text-sm text-fg shadow-[var(--shadow-border)] transition-[transform,background-color] duration-150 ease-out hover:bg-elevated active:scale-[0.96]"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -192,6 +198,7 @@ export function OpsApp() {
                 <li>Red prohibited</li>
                 <li>Dashed east stairwell</li>
                 <li>Square NFC · ring BLE</li>
+                <li>Halo = ranging accuracy, dashed under 60% confidence</li>
               </ul>
             </section>
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -204,6 +211,14 @@ export function OpsApp() {
               </section>
               <section className="rounded-2xl bg-surface p-3 shadow-[var(--shadow-border)] sm:p-4">
                 <BreachLeaderboard data={snap.charts.byEntity} />
+              </section>
+            </div>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <section className="rounded-2xl bg-surface p-3 shadow-[var(--shadow-border)] sm:p-4">
+                <ZoneOccupancyChart zoneOccupancy={snap.charts.zoneOccupancy} />
+              </section>
+              <section className="rounded-2xl bg-surface p-3 shadow-[var(--shadow-border)] sm:p-4">
+                <SignalQualityPanel entities={snap.entities} />
               </section>
             </div>
           </div>

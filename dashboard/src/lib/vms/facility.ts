@@ -104,6 +104,29 @@ export function isAuthorized(person: Person, zoneId: string): boolean {
   return person.authorized.includes("*") || person.authorized.includes(zoneId);
 }
 
+/**
+ * Nearest room-zone centroid on a given floor — stands in for "nearest
+ * fixed BLE reader" when a tag isn't cleanly inside a zone polygon (e.g.
+ * mid-corridor), so the signal layer always has a plausible reader to
+ * range against instead of reporting nothing.
+ */
+export function nearestZoneOnFloor(x: number, y: number, floor: number): Zone | null {
+  const candidates = ZONES.filter((z) => z.floor === floor && z.kind === "room");
+  if (candidates.length === 0) return null;
+  let best = candidates[0]!;
+  let bestD = Infinity;
+  for (const z of candidates) {
+    const cx = (z.x0 + z.x1) / 2;
+    const cy = (z.y0 + z.y1) / 2;
+    const d = Math.hypot(x - cx, y - cy);
+    if (d < bestD) {
+      bestD = d;
+      best = z;
+    }
+  }
+  return best;
+}
+
 export const WORLD = { x0: 0, y0: 0, x1: 72, y1: 22 };
 export const CYCLE_S = 200;
 export const TETHER_LIMIT_M = 6.1;
