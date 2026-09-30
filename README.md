@@ -382,7 +382,9 @@ tracks repeat-breach patterns per tag and surfaces an emergency-dispatch
 action, and charts overall event activity and top-breaching tags for an
 at-a-glance operator read, not just a scrolling log.
 
-![VMS Sentinel dashboard — floor 2, live map and event stream](screenshots/floor-2.png)
+![VMS Sentinel dashboard header — KPI row (including live Escalations count), the emergency-dispatch panel with four flagged tags, and scenario-injection controls](screenshots/console-overview.png)
+
+![Live map with per-tag confidence rings, the East stairwell shaft, night-loop patrol board, and event stream](screenshots/live-map-and-stairwell.png)
 
 Why it exists: the facility this project is based on already runs a
 security-ops dashboard showing geofencing activity in real time, so it
@@ -458,6 +460,8 @@ RSSI, ± accuracy in meters, and confidence % for every tracked entity —
 the same numbers driving the translucent confidence ring drawn around
 each dot on the live map, which widens (and whose confidence % resets
 and rebuilds) whenever a tag crosses into a new zone.
+
+![Zone risk-exposure and positioning-telemetry panels, below the activity-trend and breach-leaderboard charts](screenshots/positioning-telemetry.png)
 
 Running it:
 
